@@ -20,9 +20,9 @@ function encodeCredentials() {
 }
 
 // Bulk fetch ALL relevant Jira issues with cursor pagination (No tickets missed)
-async function fetchAllJiraIssues(days = 90) {
+async function fetchAllJiraIssues(days = 365) {
   // Expanded to 90 days and including unclosed or active issues to prevent missing anything
-  const jql = `ORDER BY updated DESC`;
+  const jql = `updated >= -${days}d ORDER BY updated DESC`;
   const url = `${JIRA_URL}/rest/api/3/search/jql`;
   
   let allIssues = [];
