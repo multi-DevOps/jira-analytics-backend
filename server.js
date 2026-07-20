@@ -19,7 +19,7 @@ function encodeCredentials() {
   return Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString('base64');
 }
 
-// Bulk fetch Jira issues with pagination
+// Bulk fetch Jira issues with cursor-based pagination
 async function fetchAllJiraIssues(days = 30) {
   const jql = `updated >= -${days}d ORDER BY updated DESC`;
   const url = `${JIRA_URL}/rest/api/3/search/jql`;
@@ -32,7 +32,6 @@ async function fetchAllJiraIssues(days = 30) {
   console.log(`\n🔍 Bulk fetching Jira issues for the last ${days} days...`);
 
   while (hasMore) {
-    // Construct valid payload without the deprecated "startAt" property
     const payload = {
       jql,
       maxResults,
@@ -43,7 +42,6 @@ async function fetchAllJiraIssues(days = 30) {
       ]
     };
 
-    // Attach nextPageToken only if it's not the first request
     if (nextPageToken) {
       payload.nextPageToken = nextPageToken;
     }
@@ -67,7 +65,6 @@ async function fetchAllJiraIssues(days = 30) {
     const issues = data.issues || [];
     allIssues = allIssues.concat(issues);
     
-    // Check if Jira returned a token for another page of results
     if (data.nextPageToken) {
       nextPageToken = data.nextPageToken;
     } else {
@@ -75,7 +72,7 @@ async function fetchAllJiraIssues(days = 30) {
     }
   }
 
-  console.log(`✅ Total issues fetched: ${allIssues.length}`);
+  console.log(`✅ Total issues fetched across all pages: ${allIssues.length}`);
   return allIssues;
 }
 
@@ -87,8 +84,25 @@ function processJiraAnalytics(issues, days = 30) {
   const projectMetrics = {};
   const teamMetrics = {};
 
-  // Initialize Team Metrics structure
+  // 1. Initialize ALL developers from teamsConfig first so no one is ever missing
   Object.keys(teamsConfig).forEach(teamName => {
+    teamsConfig[teamName].forEach(devName => {
+      if (!developerMetrics[devName]) {
+        developerMetrics[devName] = {
+          name: devName,
+          total_tickets: 0,
+          closed_tickets: 0,
+          total_seconds_worked: 0,
+          total_hours_worked: 0,
+          escalations_handled: 0,
+          delayed_tickets: 0,
+          planned_tasks: 0,
+          unplanned_tasks: 0,
+          issues_list: []
+        };
+      }
+    });
+
     teamMetrics[teamName] = {
       team_name: teamName,
       members: teamsConfig[teamName],
@@ -105,20 +119,19 @@ function processJiraAnalytics(issues, days = 30) {
   let totalEscalationsGlobal = 0;
   let totalHoursGlobal = 0;
 
+  // 2. Loop through issues and map them to the corresponding developer
   issues.forEach(issue => {
     const fields = issue.fields;
     
-    // 1. Extract Dev Name from Custom Field ("Assigned To")
     const customFieldVal = fields[ASSIGNED_TO_FIELD];
     let devName = 'Unassigned';
     
     if (typeof customFieldVal === 'string') {
-      devName = customFieldVal;
+      devName = customFieldVal.trim();
     } else if (customFieldVal && typeof customFieldVal === 'object') {
-      devName = customFieldVal.value || customFieldVal.displayName || 'Unassigned';
+      devName = (customFieldVal.value || customFieldVal.displayName || 'Unassigned').trim();
     }
 
-    // Initialize dev record if not exists
     if (!developerMetrics[devName]) {
       developerMetrics[devName] = {
         name: devName,
@@ -136,18 +149,15 @@ function processJiraAnalytics(issues, days = 30) {
 
     const devRecord = developerMetrics[devName];
 
-    // 2. Worklog / Time Worked Calculation
     let timeSpentSeconds = fields.timespent || 0;
     if (!timeSpentSeconds && fields.worklog?.worklogs) {
       timeSpentSeconds = fields.worklog.worklogs.reduce((sum, wl) => sum + (wl.timeSpentSeconds || 0), 0);
     }
     const hoursWorked = Math.round((timeSpentSeconds / 3600) * 10) / 10;
 
-    // 3. Status & Closure
     const status = fields.status?.name || 'Unknown';
     const isClosed = ['Done', 'Closed', 'Resolved'].includes(status);
 
-    // 4. Escalation Detection (Label, IssueType, or High Priority)
     const labels = fields.labels || [];
     const issueType = fields.issuetype?.name || '';
     const priority = fields.priority?.name || '';
@@ -156,7 +166,6 @@ function processJiraAnalytics(issues, days = 30) {
                          issueType.toLowerCase().includes('escalat') ||
                          ['Highest', 'Urgent'].includes(priority);
 
-    // 5. Delayed Ticket Calculation (DueDate passed and not closed / resolved late)
     let isDelayed = false;
     if (fields.duedate) {
       const dueDate = new Date(fields.duedate);
@@ -168,12 +177,10 @@ function processJiraAnalytics(issues, days = 30) {
       }
     }
 
-    // 6. Planned vs Unplanned
     const isUnplanned = labels.some(l => l.toLowerCase().includes('unplanned') || l.toLowerCase().includes('urgent')) ||
                         ['Bug', 'Incident'].includes(issueType);
     const classification = isUnplanned ? 'unplanned' : 'planned';
 
-    // Update Developer Aggregation
     devRecord.total_tickets += 1;
     if (isClosed) devRecord.closed_tickets += 1;
     devRecord.total_seconds_worked += timeSpentSeconds;
@@ -197,7 +204,6 @@ function processJiraAnalytics(issues, days = 30) {
       classification
     });
 
-    // Project-wise Aggregation
     const projectName = fields.project?.name || 'Unknown Project';
     if (!projectMetrics[projectName]) {
       projectMetrics[projectName] = {
@@ -213,12 +219,11 @@ function processJiraAnalytics(issues, days = 30) {
     projectMetrics[projectName].total_hours_worked = Math.round((projectMetrics[projectName].total_hours_worked + hoursWorked) * 10) / 10;
     if (isEscalation) projectMetrics[projectName].escalations += 1;
 
-    // Global Totals
     if (isEscalation) totalEscalationsGlobal += 1;
     totalHoursGlobal += hoursWorked;
   });
 
-  // Map Developer Metrics into Team Metrics
+  // 3. Aggregate totals into Team metrics based on teamsConfig rosters
   Object.keys(teamsConfig).forEach(teamName => {
     const members = teamsConfig[teamName];
     const team = teamMetrics[teamName];
