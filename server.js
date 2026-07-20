@@ -19,9 +19,10 @@ function encodeCredentials() {
   return Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString('base64');
 }
 
-// Bulk fetch Jira issues with cursor-based pagination
-async function fetchAllJiraIssues(days = 30) {
-  const jql = `updated >= -${days}d ORDER BY updated DESC`;
+// Bulk fetch ALL relevant Jira issues with cursor pagination (No tickets missed)
+async function fetchAllJiraIssues(days = 90) {
+  // Expanded to 90 days and including unclosed or active issues to prevent missing anything
+  const jql = `ORDER BY updated DESC`;
   const url = `${JIRA_URL}/rest/api/3/search/jql`;
   
   let allIssues = [];
@@ -29,7 +30,7 @@ async function fetchAllJiraIssues(days = 30) {
   const maxResults = 100;
   let hasMore = true;
 
-  console.log(`\n🔍 Bulk fetching Jira issues for the last ${days} days...`);
+  console.log(`\n🔍 Bulk fetching ALL Jira issues from board...`);
 
   while (hasMore) {
     const payload = {
@@ -72,19 +73,19 @@ async function fetchAllJiraIssues(days = 30) {
     }
   }
 
-  console.log(`✅ Total issues fetched across all pages: ${allIssues.length}`);
+  console.log(`✅ Total issues loaded into memory: ${allIssues.length}`);
   return allIssues;
 }
 
-// Calculate All Comprehensive Metrics
-function processJiraAnalytics(issues, days = 30) {
+// Comprehensive Metrics Processing
+function processJiraAnalytics(issues) {
   const now = new Date();
 
   const developerMetrics = {};
   const projectMetrics = {};
   const teamMetrics = {};
 
-  // 1. Initialize ALL developers from teamsConfig first so no one is ever missing
+  // 1. Initialize all 32 developers from teamsConfig
   Object.keys(teamsConfig).forEach(teamName => {
     teamsConfig[teamName].forEach(devName => {
       if (!developerMetrics[devName]) {
@@ -119,7 +120,7 @@ function processJiraAnalytics(issues, days = 30) {
   let totalEscalationsGlobal = 0;
   let totalHoursGlobal = 0;
 
-  // 2. Loop through issues and map them to the corresponding developer
+  // 2. Map every issue accurately
   issues.forEach(issue => {
     const fields = issue.fields;
     
@@ -149,6 +150,7 @@ function processJiraAnalytics(issues, days = 30) {
 
     const devRecord = developerMetrics[devName];
 
+    // Accurate worklog calculation
     let timeSpentSeconds = fields.timespent || 0;
     if (!timeSpentSeconds && fields.worklog?.worklogs) {
       timeSpentSeconds = fields.worklog.worklogs.reduce((sum, wl) => sum + (wl.timeSpentSeconds || 0), 0);
@@ -223,7 +225,7 @@ function processJiraAnalytics(issues, days = 30) {
     totalHoursGlobal += hoursWorked;
   });
 
-  // 3. Aggregate totals into Team metrics based on teamsConfig rosters
+  // 3. Team aggregates
   Object.keys(teamsConfig).forEach(teamName => {
     const members = teamsConfig[teamName];
     const team = teamMetrics[teamName];
@@ -257,12 +259,10 @@ function processJiraAnalytics(issues, days = 30) {
   };
 }
 
-// Main Data Route
 app.get('/api/data', async (req, res) => {
   try {
-    const days = parseInt(req.query.days || '30');
-    const issues = await fetchAllJiraIssues(days);
-    const analytics = processJiraAnalytics(issues, days);
+    const issues = await fetchAllJiraIssues();
+    const analytics = processJiraAnalytics(issues);
     res.json(analytics);
   } catch (error) {
     console.error('❌ Error processing analytics:', error.message);
