@@ -13,7 +13,7 @@ const JIRA_EMAIL = process.env.JIRA_EMAIL;
 const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN;
 const PORT = process.env.PORT || 3001;
 
-// Helper function to encode credentials
+// Helper function to encode credentials just
 function encodeCredentials() {
   const credentials = `${JIRA_EMAIL}:${JIRA_API_TOKEN}`;
   return Buffer.from(credentials).toString('base64');
