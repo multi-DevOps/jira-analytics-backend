@@ -12,7 +12,8 @@ app.use(express.json());
 const JIRA_URL = process.env.JIRA_URL.replace(/\/$/, '');
 const JIRA_EMAIL = process.env.JIRA_EMAIL;
 const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN;
-const ASSIGNED_TO_FIELD = process.env.JIRA_ASSIGNED_TO_FIELD_ID || 'customfield_10025';
+const ASSIGNED_TO_FIELD = process.env.JIRA_ASSIGNED_TO_FIELD_ID || 'customfield_10544';
+const PLANNED_UNPLANNED_FIELD = process.env.JIRA_PLANNED_UNPLANNED_FIELD_ID || 'customfield_10370';
 const PORT = process.env.PORT || 3001;
 
 function encodeCredentials() {
@@ -39,7 +40,7 @@ async function fetchAllJiraIssues(days = 365) {
       fields: [
         'key', 'summary', 'status', 'created', 'updated', 'duedate',
         'timespent', 'timeoriginalestimate', 'worklog',
-        'project', 'priority', 'labels', 'issuetype', ASSIGNED_TO_FIELD
+        'project', 'priority', 'labels', 'issuetype', ASSIGNED_TO_FIELD, PLANNED_UNPLANNED_FIELD
       ]
     };
 
@@ -75,6 +76,197 @@ async function fetchAllJiraIssues(days = 365) {
 
   console.log(`✅ Total issues loaded into memory: ${allIssues.length}`);
   return allIssues;
+}
+
+// Helper to calculate Monthly Gap Analytics (Planned vs Unplanned) directly from Jira Cloud
+function processMonthlyAnalytics(issues) {
+  const projectToCategoryMap = {
+    'Bonton Travel ERP': 'Bonton',
+    'Bonton Escalation': 'Bonton',
+    'Bonton Tech Support': 'Bonton',
+    'CSS': 'Bonton',
+    'Mobile': 'Mobile',
+    'Market Maya': 'MM',
+    'ForexERP': 'ForexERP',
+    'AI Project': 'AI Project',
+    'UIUX': 'UIUX',
+    'Devops Works': 'DevOps',
+    'OPS': 'DevOps',
+    'Planning': 'Bonton'
+  };
+
+  const monthsData = {};
+
+  // Group issues into months by updated/created date
+  issues.forEach(issue => {
+    const fields = issue.fields;
+    const dateObj = new Date(fields.updated || fields.created);
+    const monthKey = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`;
+
+    if (!monthsData[monthKey]) {
+      monthsData[monthKey] = {};
+    }
+
+    const rawProjName = fields.project?.name || 'Unknown Project';
+    const category = projectToCategoryMap[rawProjName] || rawProjName;
+
+    if (!monthsData[monthKey][category]) {
+      monthsData[monthKey][category] = {
+        project: category,
+        jira_projects: new Set(),
+        planned_tickets: 0,
+        unplanned_tickets: 0,
+        planned_total_hr: 0,
+        planned_delivery_hr: 0,
+        unplanned_total_hr: 0,
+        unplanned_delivery_hr: 0
+      };
+    }
+
+    const projRecord = monthsData[monthKey][category];
+    projRecord.jira_projects.add(rawProjName);
+
+    // Planned vs Unplanned classification
+    const rawPlannedVal = fields[PLANNED_UNPLANNED_FIELD]?.value || '';
+    const labels = fields.labels || [];
+    const issueType = fields.issuetype?.name || '';
+    
+    let isUnplanned = false;
+    if (rawPlannedVal) {
+      isUnplanned = rawPlannedVal.toLowerCase() === 'unplanned';
+    } else {
+      isUnplanned = labels.some(l => l.toLowerCase().includes('unplanned') || l.toLowerCase().includes('urgent')) ||
+                    ['Bug', 'Incident'].includes(issueType);
+    }
+
+    let timeSpentSeconds = fields.timespent || 0;
+    if (!timeSpentSeconds && fields.worklog?.worklogs) {
+      timeSpentSeconds = fields.worklog.worklogs.reduce((sum, wl) => sum + (wl.timeSpentSeconds || 0), 0);
+    }
+    const hoursWorked = Math.round((timeSpentSeconds / 3600) * 100) / 100;
+    const estHours = Math.round(((fields.timeoriginalestimate || 0) / 3600) * 100) / 100;
+
+    if (isUnplanned) {
+      projRecord.unplanned_tickets += 1;
+      projRecord.unplanned_delivery_hr += hoursWorked;
+      projRecord.unplanned_total_hr += estHours;
+    } else {
+      projRecord.planned_tickets += 1;
+      projRecord.planned_delivery_hr += hoursWorked;
+      projRecord.planned_total_hr += estHours;
+    }
+  });
+
+  // Default baseline capacity fallback (per project) if estimates in Jira are not filled out
+  const BASELINE_CAPACITY = {
+    'Bonton': { planned: 768.0, unplanned: 192.0 },
+    'Mobile': { planned: 384.0, unplanned: 96.0 },
+    'MM': { planned: 640.0, unplanned: 160.0 },
+    'ForexERP': { planned: 640.0, unplanned: 160.0 },
+    'AI Project': { planned: 640.0, unplanned: 160.0 },
+    'UIUX': { planned: 384.0, unplanned: 96.0 },
+    'DevOps': { planned: 384.0, unplanned: 96.0 }
+  };
+
+  const result = {};
+
+  Object.keys(monthsData).forEach(monthKey => {
+    const rows = [];
+    let totPlannedTickets = 0, totUnplannedTickets = 0;
+    let totPlannedTotal = 0, totPlannedDelivery = 0, totPlannedGap = 0;
+    let totUnplannedTotal = 0, totUnplannedDelivery = 0, totUnplannedGap = 0;
+
+    // Standard list of categories to always render
+    const allCategories = Array.from(new Set([
+      ...Object.keys(BASELINE_CAPACITY),
+      ...Object.keys(monthsData[monthKey])
+    ]));
+
+    allCategories.forEach(cat => {
+      const item = monthsData[monthKey][cat] || {
+        project: cat,
+        jira_projects: new Set([cat]),
+        planned_tickets: 0,
+        unplanned_tickets: 0,
+        planned_total_hr: 0,
+        planned_delivery_hr: 0,
+        unplanned_total_hr: 0,
+        unplanned_delivery_hr: 0
+      };
+
+      const baseCap = BASELINE_CAPACITY[cat] || { planned: 160.0, unplanned: 40.0 };
+      
+      // Use Jira timeoriginalestimate if available; else fall back to baseline target capacity
+      const plannedTotal = item.planned_total_hr > 0 ? item.planned_total_hr : baseCap.planned;
+      const plannedDelivery = Math.round(item.planned_delivery_hr * 100) / 100;
+      const plannedGap = Math.round((plannedTotal - plannedDelivery) * 100) / 100;
+      const plannedGapPct = plannedTotal ? Math.round((plannedGap / plannedTotal) * 10000) / 100 : 0;
+
+      const unplannedTotal = item.unplanned_total_hr > 0 ? item.unplanned_total_hr : baseCap.unplanned;
+      const unplannedDelivery = Math.round(item.unplanned_delivery_hr * 100) / 100;
+      const unplannedGap = Math.round((unplannedTotal - unplannedDelivery) * 100) / 100;
+      const unplannedGapPct = unplannedTotal ? Math.round((unplannedGap / unplannedTotal) * 10000) / 100 : 0;
+
+      const totalCap = plannedTotal + unplannedTotal;
+      const totalGapHrs = Math.round((plannedGap + unplannedGap) * 100) / 100;
+      const totalGapPct = totalCap ? Math.round((totalGapHrs / totalCap) * 10000) / 100 : 0;
+
+      rows.push({
+        project: cat,
+        planned_tickets: item.planned_tickets,
+        planned_total_hr: plannedTotal,
+        planned_delivery_hr: plannedDelivery,
+        planned_gap_hr: plannedGap,
+        planned_gap_pct: plannedGapPct,
+        unplanned_tickets: item.unplanned_tickets,
+        unplanned_total_hr: unplannedTotal,
+        unplanned_delivery_hr: unplannedDelivery,
+        unplanned_gap_hr: unplannedGap,
+        unplanned_gap_pct: unplannedGapPct,
+        gap_hrs: totalGapHrs,
+        gap_pct: totalGapPct
+      });
+
+      totPlannedTickets += item.planned_tickets;
+      totUnplannedTickets += item.unplanned_tickets;
+      totPlannedTotal += plannedTotal;
+      totPlannedDelivery += plannedDelivery;
+      totPlannedGap += plannedGap;
+      totUnplannedTotal += unplannedTotal;
+      totUnplannedDelivery += unplannedDelivery;
+      totUnplannedGap += unplannedGap;
+    });
+
+    // Total Row
+    const totCap = totPlannedTotal + totUnplannedTotal;
+    const totPlannedGapPct = totPlannedTotal ? Math.round((totPlannedGap / totPlannedTotal) * 10000) / 100 : 0;
+    const totUnplannedGapPct = totUnplannedTotal ? Math.round((totUnplannedGap / totUnplannedTotal) * 10000) / 100 : 0;
+    const overallGapHrs = Math.round((totPlannedGap + totUnplannedGap) * 100) / 100;
+    const overallGapPct = totCap ? Math.round((overallGapHrs / totCap) * 10000) / 100 : 0;
+
+    const totalRow = {
+      project: 'Total',
+      planned_tickets: totPlannedTickets,
+      planned_total_hr: Math.round(totPlannedTotal * 100) / 100,
+      planned_delivery_hr: Math.round(totPlannedDelivery * 100) / 100,
+      planned_gap_hr: Math.round(totPlannedGap * 100) / 100,
+      planned_gap_pct: totPlannedGapPct,
+      unplanned_tickets: totUnplannedTickets,
+      unplanned_total_hr: Math.round(totUnplannedTotal * 100) / 100,
+      unplanned_delivery_hr: Math.round(totUnplannedDelivery * 100) / 100,
+      unplanned_gap_hr: Math.round(totUnplannedGap * 100) / 100,
+      unplanned_gap_pct: totUnplannedGapPct,
+      gap_hrs: overallGapHrs,
+      gap_pct: overallGapPct
+    };
+
+    result[monthKey] = {
+      rows,
+      total: totalRow
+    };
+  });
+
+  return result;
 }
 
 // Comprehensive Metrics Processing
@@ -179,8 +371,14 @@ function processJiraAnalytics(issues) {
       }
     }
 
-    const isUnplanned = labels.some(l => l.toLowerCase().includes('unplanned') || l.toLowerCase().includes('urgent')) ||
-                        ['Bug', 'Incident'].includes(issueType);
+    const rawPlannedVal = fields[PLANNED_UNPLANNED_FIELD]?.value || '';
+    let isUnplanned = false;
+    if (rawPlannedVal) {
+      isUnplanned = rawPlannedVal.toLowerCase() === 'unplanned';
+    } else {
+      isUnplanned = labels.some(l => l.toLowerCase().includes('unplanned') || l.toLowerCase().includes('urgent')) ||
+                    ['Bug', 'Incident'].includes(issueType);
+    }
     const classification = isUnplanned ? 'unplanned' : 'planned';
 
     devRecord.total_tickets += 1;
@@ -244,6 +442,8 @@ function processJiraAnalytics(issues) {
     });
   });
 
+  const monthlyAnalytics = processMonthlyAnalytics(issues);
+
   return {
     generated_at: new Date().toISOString(),
     teams_config: teamsConfig,
@@ -255,7 +455,8 @@ function processJiraAnalytics(issues) {
     },
     developers: Object.values(developerMetrics),
     teams: Object.values(teamMetrics),
-    projects: Object.values(projectMetrics)
+    projects: Object.values(projectMetrics),
+    monthly_analytics: monthlyAnalytics
   };
 }
 
