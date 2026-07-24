@@ -1,5 +1,5 @@
 #!/bin/bash
-
+# diagnostics jira script
 # Jira Diagnostic Script
 # This helps identify why no issues are being fetched
 
