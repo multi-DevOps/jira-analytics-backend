@@ -401,7 +401,8 @@ function processJiraAnalytics(issues) {
       due_date: fields.duedate || 'No Due Date',
       is_delayed: isDelayed,
       is_escalation: isEscalation,
-      classification
+      classification,
+      updated: fields.updated || fields.created // ADDED THIS LINE FOR FRONTEND MONTH FILTERING
     });
 
     const projectName = fields.project?.name || 'Unknown Project';
