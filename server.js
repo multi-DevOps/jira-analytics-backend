@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const teamsConfig = require('./teamsConfig');
+const { GoogleGenAI } = require('@google/genai');
 
 const app = express();
 app.use(cors());
@@ -16,16 +17,17 @@ const ASSIGNED_TO_FIELD = process.env.JIRA_ASSIGNED_TO_FIELD_ID || 'customfield_
 const PLANNED_UNPLANNED_FIELD = process.env.JIRA_PLANNED_UNPLANNED_FIELD_ID || 'customfield_10370';
 const PORT = process.env.PORT || 3001;
 
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
 function encodeCredentials() {
   return Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString('base64');
 }
 
-// --- NEW: IN-MEMORY CACHE ---
+// --- IN-MEMORY CACHE ---
 let globalAnalyticsCache = null;
 let isFetching = false;
 let lastFetchTime = null;
 
-// Bulk fetch Jira issues efficiently
 async function fetchAllJiraIssues(days = 365) {
   const jql = `updated >= -${days}d ORDER BY updated DESC`;
   const url = `${JIRA_URL}/rest/api/3/search/jql`;
@@ -82,7 +84,6 @@ async function fetchAllJiraIssues(days = 365) {
   return allIssues;
 }
 
-// Helper to calculate Monthly Gap Analytics
 function processMonthlyAnalytics(issues) {
   const projectToCategoryMap = {
     'Bonton Travel ERP': 'Bonton',
@@ -114,17 +115,13 @@ function processMonthlyAnalytics(issues) {
     if (!monthsData[monthKey][category]) {
       monthsData[monthKey][category] = {
         project: category,
-        planned_tickets: 0,
-        unplanned_tickets: 0,
-        planned_total_hr: 0,
-        planned_delivery_hr: 0,
-        unplanned_total_hr: 0,
-        unplanned_delivery_hr: 0
+        planned_tickets: 0, unplanned_tickets: 0,
+        planned_total_hr: 0, planned_delivery_hr: 0,
+        unplanned_total_hr: 0, unplanned_delivery_hr: 0
       };
     }
 
     const projRecord = monthsData[monthKey][category];
-
     const rawPlannedVal = fields[PLANNED_UNPLANNED_FIELD]?.value || '';
     const labels = fields.labels || [];
     const issueType = fields.issuetype?.name || '';
@@ -180,14 +177,10 @@ function processMonthlyAnalytics(issues) {
 
     allCategories.forEach(cat => {
       const item = monthsData[monthKey][cat] || {
-        project: cat,
-        planned_tickets: 0, unplanned_tickets: 0,
-        planned_total_hr: 0, planned_delivery_hr: 0,
-        unplanned_total_hr: 0, unplanned_delivery_hr: 0
+        project: cat, planned_tickets: 0, unplanned_tickets: 0, planned_total_hr: 0, planned_delivery_hr: 0, unplanned_total_hr: 0, unplanned_delivery_hr: 0
       };
 
       const baseCap = BASELINE_CAPACITY[cat] || { planned: 160.0, unplanned: 40.0 };
-      
       const plannedTotal = item.planned_total_hr > 0 ? item.planned_total_hr : baseCap.planned;
       const plannedDelivery = Math.round(item.planned_delivery_hr * 100) / 100;
       const plannedGap = Math.round((plannedTotal - plannedDelivery) * 100) / 100;
@@ -234,7 +227,6 @@ function processMonthlyAnalytics(issues) {
   return result;
 }
 
-// Comprehensive Metrics Processing
 function processJiraAnalytics(issues) {
   const now = new Date();
 
@@ -245,9 +237,7 @@ function processJiraAnalytics(issues) {
   Object.keys(teamsConfig).forEach(teamName => {
     teamsConfig[teamName].forEach(devName => {
       if (!developerMetrics[devName]) {
-        developerMetrics[devName] = {
-          name: devName, total_tickets: 0, closed_tickets: 0, total_seconds_worked: 0, total_hours_worked: 0, escalations_handled: 0, delayed_tickets: 0, planned_tasks: 0, unplanned_tasks: 0, issues_list: []
-        };
+        developerMetrics[devName] = { name: devName, total_tickets: 0, closed_tickets: 0, total_seconds_worked: 0, total_hours_worked: 0, escalations_handled: 0, delayed_tickets: 0, planned_tasks: 0, unplanned_tasks: 0, issues_list: [] };
       }
     });
 
@@ -385,7 +375,6 @@ function processJiraAnalytics(issues) {
   };
 }
 
-// --- NEW: CACHE UPDATE ORCHESTRATOR ---
 async function refreshAnalyticsCache() {
   if (isFetching) return;
   isFetching = true;
@@ -400,20 +389,47 @@ async function refreshAnalyticsCache() {
   }
 }
 
-// 1. Fire the initial cache build as soon as the Node server boots up
 refreshAnalyticsCache();
-
-// 2. Set an interval to run the sync silently in the background every 15 minutes
 setInterval(refreshAnalyticsCache, 15 * 60 * 1000);
+
+// --- UPDATED AI SUMMARY ENDPOINT ---
+app.post('/api/ai-summary', async (req, res) => {
+  try {
+    const { activeTab, contextData } = req.body;
+
+    const prompt = `
+      You are an expert Agile & DevOps Analytics Consultant.
+      Analyze the following Jira analytics snapshot specifically for the "${activeTab}" dashboard view.
+      
+      DATA SNAPSHOT:
+      ${JSON.stringify(contextData, null, 2)}
+      
+      Provide a structured, concise response formatted cleanly without using asterisks or markdown, just plain text line by line:
+      1. Executive Overview for this specific view (2-3 sentences)
+      2. Key Risk Areas & Bottlenecks observed in this data (Bulleted list using dashes)
+      3. Performance Highlights (Bulleted list using dashes)
+      4. Recommendations for Team Management based on this view
+      Keep the tone professional, objective, and executive-ready.
+    `;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+    });
+
+    res.json({ success: true, aiSummary: response.text });
+  } catch (error) {
+    console.error('❌ AI Generation Error:', error.message);
+    res.status(500).json({ error: 'Failed to generate AI insights.' });
+  }
+});
 
 app.get('/api/data', async (req, res) => {
   try {
-    // If user clicks "Sync Data" on frontend, force a fresh pull if it's not already fetching
     if (req.query.force === 'true') {
       await refreshAnalyticsCache();
     }
     
-    // Serve from RAM instantly if available
     if (globalAnalyticsCache) {
       return res.json({
         ...globalAnalyticsCache,
@@ -422,9 +438,7 @@ app.get('/api/data', async (req, res) => {
       });
     }
 
-    // Edge case: Request comes in exactly when server boots, before initial cache finishes
     res.status(503).json({ error: "Server is warming up and building the initial dataset. Please wait 10 seconds and refresh." });
-
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
