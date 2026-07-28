@@ -20,9 +20,13 @@ function encodeCredentials() {
   return Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString('base64');
 }
 
-// Bulk fetch ALL relevant Jira issues with cursor pagination (No tickets missed)
+// --- NEW: IN-MEMORY CACHE ---
+let globalAnalyticsCache = null;
+let isFetching = false;
+let lastFetchTime = null;
+
+// Bulk fetch Jira issues efficiently
 async function fetchAllJiraIssues(days = 365) {
-  // Expanded to 90 days and including unclosed or active issues to prevent missing anything
   const jql = `updated >= -${days}d ORDER BY updated DESC`;
   const url = `${JIRA_URL}/rest/api/3/search/jql`;
   
@@ -31,7 +35,8 @@ async function fetchAllJiraIssues(days = 365) {
   const maxResults = 100;
   let hasMore = true;
 
-  console.log(`\n🔍 Bulk fetching ALL Jira issues from board...`);
+  console.log(`\n🔄 [JIRA SYNC] Pulling data from board...`);
+  const startTime = Date.now();
 
   while (hasMore) {
     const payload = {
@@ -44,9 +49,7 @@ async function fetchAllJiraIssues(days = 365) {
       ]
     };
 
-    if (nextPageToken) {
-      payload.nextPageToken = nextPageToken;
-    }
+    if (nextPageToken) payload.nextPageToken = nextPageToken;
 
     const response = await fetch(url, {
       method: 'POST',
@@ -74,11 +77,12 @@ async function fetchAllJiraIssues(days = 365) {
     }
   }
 
-  console.log(`✅ Total issues loaded into memory: ${allIssues.length}`);
+  const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+  console.log(`✅ [JIRA SYNC] Loaded ${allIssues.length} issues into memory in ${duration}s.`);
   return allIssues;
 }
 
-// Helper to calculate Monthly Gap Analytics (Planned vs Unplanned) directly from Jira Cloud
+// Helper to calculate Monthly Gap Analytics
 function processMonthlyAnalytics(issues) {
   const projectToCategoryMap = {
     'Bonton Travel ERP': 'Bonton',
@@ -97,15 +101,12 @@ function processMonthlyAnalytics(issues) {
 
   const monthsData = {};
 
-  // Group issues into months by updated/created date
   issues.forEach(issue => {
     const fields = issue.fields;
     const dateObj = new Date(fields.updated || fields.created);
     const monthKey = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`;
 
-    if (!monthsData[monthKey]) {
-      monthsData[monthKey] = {};
-    }
+    if (!monthsData[monthKey]) monthsData[monthKey] = {};
 
     const rawProjName = fields.project?.name || 'Unknown Project';
     const category = projectToCategoryMap[rawProjName] || rawProjName;
@@ -113,7 +114,6 @@ function processMonthlyAnalytics(issues) {
     if (!monthsData[monthKey][category]) {
       monthsData[monthKey][category] = {
         project: category,
-        jira_projects: new Set(),
         planned_tickets: 0,
         unplanned_tickets: 0,
         planned_total_hr: 0,
@@ -124,9 +124,7 @@ function processMonthlyAnalytics(issues) {
     }
 
     const projRecord = monthsData[monthKey][category];
-    projRecord.jira_projects.add(rawProjName);
 
-    // Planned vs Unplanned classification
     const rawPlannedVal = fields[PLANNED_UNPLANNED_FIELD]?.value || '';
     const labels = fields.labels || [];
     const issueType = fields.issuetype?.name || '';
@@ -157,7 +155,6 @@ function processMonthlyAnalytics(issues) {
     }
   });
 
-  // Default baseline capacity fallback (per project) if estimates in Jira are not filled out
   const BASELINE_CAPACITY = {
     'Bonton': { planned: 768.0, unplanned: 192.0 },
     'Mobile': { planned: 384.0, unplanned: 96.0 },
@@ -176,7 +173,6 @@ function processMonthlyAnalytics(issues) {
     let totPlannedTotal = 0, totPlannedDelivery = 0, totPlannedGap = 0;
     let totUnplannedTotal = 0, totUnplannedDelivery = 0, totUnplannedGap = 0;
 
-    // Standard list of categories to always render
     const allCategories = Array.from(new Set([
       ...Object.keys(BASELINE_CAPACITY),
       ...Object.keys(monthsData[monthKey])
@@ -185,18 +181,13 @@ function processMonthlyAnalytics(issues) {
     allCategories.forEach(cat => {
       const item = monthsData[monthKey][cat] || {
         project: cat,
-        jira_projects: new Set([cat]),
-        planned_tickets: 0,
-        unplanned_tickets: 0,
-        planned_total_hr: 0,
-        planned_delivery_hr: 0,
-        unplanned_total_hr: 0,
-        unplanned_delivery_hr: 0
+        planned_tickets: 0, unplanned_tickets: 0,
+        planned_total_hr: 0, planned_delivery_hr: 0,
+        unplanned_total_hr: 0, unplanned_delivery_hr: 0
       };
 
       const baseCap = BASELINE_CAPACITY[cat] || { planned: 160.0, unplanned: 40.0 };
       
-      // Use Jira timeoriginalestimate if available; else fall back to baseline target capacity
       const plannedTotal = item.planned_total_hr > 0 ? item.planned_total_hr : baseCap.planned;
       const plannedDelivery = Math.round(item.planned_delivery_hr * 100) / 100;
       const plannedGap = Math.round((plannedTotal - plannedDelivery) * 100) / 100;
@@ -213,56 +204,30 @@ function processMonthlyAnalytics(issues) {
 
       rows.push({
         project: cat,
-        planned_tickets: item.planned_tickets,
-        planned_total_hr: plannedTotal,
-        planned_delivery_hr: plannedDelivery,
-        planned_gap_hr: plannedGap,
-        planned_gap_pct: plannedGapPct,
-        unplanned_tickets: item.unplanned_tickets,
-        unplanned_total_hr: unplannedTotal,
-        unplanned_delivery_hr: unplannedDelivery,
-        unplanned_gap_hr: unplannedGap,
-        unplanned_gap_pct: unplannedGapPct,
-        gap_hrs: totalGapHrs,
-        gap_pct: totalGapPct
+        planned_tickets: item.planned_tickets, planned_total_hr: plannedTotal, planned_delivery_hr: plannedDelivery, planned_gap_hr: plannedGap, planned_gap_pct: plannedGapPct,
+        unplanned_tickets: item.unplanned_tickets, unplanned_total_hr: unplannedTotal, unplanned_delivery_hr: unplannedDelivery, unplanned_gap_hr: unplannedGap, unplanned_gap_pct: unplannedGapPct,
+        gap_hrs: totalGapHrs, gap_pct: totalGapPct
       });
 
-      totPlannedTickets += item.planned_tickets;
-      totUnplannedTickets += item.unplanned_tickets;
-      totPlannedTotal += plannedTotal;
-      totPlannedDelivery += plannedDelivery;
-      totPlannedGap += plannedGap;
-      totUnplannedTotal += unplannedTotal;
-      totUnplannedDelivery += unplannedDelivery;
-      totUnplannedGap += unplannedGap;
+      totPlannedTickets += item.planned_tickets; totUnplannedTickets += item.unplanned_tickets;
+      totPlannedTotal += plannedTotal; totPlannedDelivery += plannedDelivery; totPlannedGap += plannedGap;
+      totUnplannedTotal += unplannedTotal; totUnplannedDelivery += unplannedDelivery; totUnplannedGap += unplannedGap;
     });
 
-    // Total Row
     const totCap = totPlannedTotal + totUnplannedTotal;
     const totPlannedGapPct = totPlannedTotal ? Math.round((totPlannedGap / totPlannedTotal) * 10000) / 100 : 0;
     const totUnplannedGapPct = totUnplannedTotal ? Math.round((totUnplannedGap / totUnplannedTotal) * 10000) / 100 : 0;
     const overallGapHrs = Math.round((totPlannedGap + totUnplannedGap) * 100) / 100;
     const overallGapPct = totCap ? Math.round((overallGapHrs / totCap) * 10000) / 100 : 0;
 
-    const totalRow = {
-      project: 'Total',
-      planned_tickets: totPlannedTickets,
-      planned_total_hr: Math.round(totPlannedTotal * 100) / 100,
-      planned_delivery_hr: Math.round(totPlannedDelivery * 100) / 100,
-      planned_gap_hr: Math.round(totPlannedGap * 100) / 100,
-      planned_gap_pct: totPlannedGapPct,
-      unplanned_tickets: totUnplannedTickets,
-      unplanned_total_hr: Math.round(totUnplannedTotal * 100) / 100,
-      unplanned_delivery_hr: Math.round(totUnplannedDelivery * 100) / 100,
-      unplanned_gap_hr: Math.round(totUnplannedGap * 100) / 100,
-      unplanned_gap_pct: totUnplannedGapPct,
-      gap_hrs: overallGapHrs,
-      gap_pct: overallGapPct
-    };
-
     result[monthKey] = {
       rows,
-      total: totalRow
+      total: {
+        project: 'Total',
+        planned_tickets: totPlannedTickets, planned_total_hr: Math.round(totPlannedTotal * 100) / 100, planned_delivery_hr: Math.round(totPlannedDelivery * 100) / 100, planned_gap_hr: Math.round(totPlannedGap * 100) / 100, planned_gap_pct: totPlannedGapPct,
+        unplanned_tickets: totUnplannedTickets, unplanned_total_hr: Math.round(totUnplannedTotal * 100) / 100, unplanned_delivery_hr: Math.round(totUnplannedDelivery * 100) / 100, unplanned_gap_hr: Math.round(totUnplannedGap * 100) / 100, unplanned_gap_pct: totUnplannedGapPct,
+        gap_hrs: overallGapHrs, gap_pct: overallGapPct
+      }
     };
   });
 
@@ -277,42 +242,23 @@ function processJiraAnalytics(issues) {
   const projectMetrics = {};
   const teamMetrics = {};
 
-  // 1. Initialize all 32 developers from teamsConfig
   Object.keys(teamsConfig).forEach(teamName => {
     teamsConfig[teamName].forEach(devName => {
       if (!developerMetrics[devName]) {
         developerMetrics[devName] = {
-          name: devName,
-          total_tickets: 0,
-          closed_tickets: 0,
-          total_seconds_worked: 0,
-          total_hours_worked: 0,
-          escalations_handled: 0,
-          delayed_tickets: 0,
-          planned_tasks: 0,
-          unplanned_tasks: 0,
-          issues_list: []
+          name: devName, total_tickets: 0, closed_tickets: 0, total_seconds_worked: 0, total_hours_worked: 0, escalations_handled: 0, delayed_tickets: 0, planned_tasks: 0, unplanned_tasks: 0, issues_list: []
         };
       }
     });
 
     teamMetrics[teamName] = {
-      team_name: teamName,
-      members: teamsConfig[teamName],
-      total_tickets: 0,
-      closed_tickets: 0,
-      total_hours_worked: 0,
-      escalations: 0,
-      delayed_tickets: 0,
-      planned_tasks: 0,
-      unplanned_tasks: 0,
+      team_name: teamName, members: teamsConfig[teamName], total_tickets: 0, closed_tickets: 0, total_hours_worked: 0, escalations: 0, delayed_tickets: 0, planned_tasks: 0, unplanned_tasks: 0,
     };
   });
 
   let totalEscalationsGlobal = 0;
   let totalHoursGlobal = 0;
 
-  // 2. Map every issue accurately
   issues.forEach(issue => {
     const fields = issue.fields;
     
@@ -326,23 +272,11 @@ function processJiraAnalytics(issues) {
     }
 
     if (!developerMetrics[devName]) {
-      developerMetrics[devName] = {
-        name: devName,
-        total_tickets: 0,
-        closed_tickets: 0,
-        total_seconds_worked: 0,
-        total_hours_worked: 0,
-        escalations_handled: 0,
-        delayed_tickets: 0,
-        planned_tasks: 0,
-        unplanned_tasks: 0,
-        issues_list: []
-      };
+      developerMetrics[devName] = { name: devName, total_tickets: 0, closed_tickets: 0, total_seconds_worked: 0, total_hours_worked: 0, escalations_handled: 0, delayed_tickets: 0, planned_tasks: 0, unplanned_tasks: 0, issues_list: [] };
     }
 
     const devRecord = developerMetrics[devName];
 
-    // Accurate worklog calculation
     let timeSpentSeconds = fields.timespent || 0;
     if (!timeSpentSeconds && fields.worklog?.worklogs) {
       timeSpentSeconds = fields.worklog.worklogs.reduce((sum, wl) => sum + (wl.timeSpentSeconds || 0), 0);
@@ -376,8 +310,7 @@ function processJiraAnalytics(issues) {
     if (rawPlannedVal) {
       isUnplanned = rawPlannedVal.toLowerCase() === 'unplanned';
     } else {
-      isUnplanned = labels.some(l => l.toLowerCase().includes('unplanned') || l.toLowerCase().includes('urgent')) ||
-                    ['Bug', 'Incident'].includes(issueType);
+      isUnplanned = labels.some(l => l.toLowerCase().includes('unplanned') || l.toLowerCase().includes('urgent')) || ['Bug', 'Incident'].includes(issueType);
     }
     const classification = isUnplanned ? 'unplanned' : 'planned';
 
@@ -402,18 +335,12 @@ function processJiraAnalytics(issues) {
       is_delayed: isDelayed,
       is_escalation: isEscalation,
       classification,
-      updated: fields.updated || fields.created // ADDED THIS LINE FOR FRONTEND MONTH FILTERING
+      updated: fields.updated || fields.created
     });
 
     const projectName = fields.project?.name || 'Unknown Project';
     if (!projectMetrics[projectName]) {
-      projectMetrics[projectName] = {
-        project_name: projectName,
-        total_tickets: 0,
-        delayed_tickets: 0,
-        total_hours_worked: 0,
-        escalations: 0
-      };
+      projectMetrics[projectName] = { project_name: projectName, total_tickets: 0, delayed_tickets: 0, total_hours_worked: 0, escalations: 0 };
     }
     projectMetrics[projectName].total_tickets += 1;
     if (isDelayed) projectMetrics[projectName].delayed_tickets += 1;
@@ -424,7 +351,6 @@ function processJiraAnalytics(issues) {
     totalHoursGlobal += hoursWorked;
   });
 
-  // 3. Team aggregates
   Object.keys(teamsConfig).forEach(teamName => {
     const members = teamsConfig[teamName];
     const team = teamMetrics[teamName];
@@ -443,8 +369,6 @@ function processJiraAnalytics(issues) {
     });
   });
 
-  const monthlyAnalytics = processMonthlyAnalytics(issues);
-
   return {
     generated_at: new Date().toISOString(),
     teams_config: teamsConfig,
@@ -457,25 +381,60 @@ function processJiraAnalytics(issues) {
     developers: Object.values(developerMetrics),
     teams: Object.values(teamMetrics),
     projects: Object.values(projectMetrics),
-    monthly_analytics: monthlyAnalytics
+    monthly_analytics: processMonthlyAnalytics(issues)
   };
 }
 
-app.get('/api/data', async (req, res) => {
+// --- NEW: CACHE UPDATE ORCHESTRATOR ---
+async function refreshAnalyticsCache() {
+  if (isFetching) return;
+  isFetching = true;
   try {
     const issues = await fetchAllJiraIssues();
-    const analytics = processJiraAnalytics(issues);
-    res.json(analytics);
+    globalAnalyticsCache = processJiraAnalytics(issues);
+    lastFetchTime = new Date();
   } catch (error) {
-    console.error('❌ Error processing analytics:', error.message);
+    console.error('❌ [CACHE ERROR] Failed to update background analytics:', error.message);
+  } finally {
+    isFetching = false;
+  }
+}
+
+// 1. Fire the initial cache build as soon as the Node server boots up
+refreshAnalyticsCache();
+
+// 2. Set an interval to run the sync silently in the background every 15 minutes
+setInterval(refreshAnalyticsCache, 15 * 60 * 1000);
+
+app.get('/api/data', async (req, res) => {
+  try {
+    // If user clicks "Sync Data" on frontend, force a fresh pull if it's not already fetching
+    if (req.query.force === 'true') {
+      await refreshAnalyticsCache();
+    }
+    
+    // Serve from RAM instantly if available
+    if (globalAnalyticsCache) {
+      return res.json({
+        ...globalAnalyticsCache,
+        cache_status: 'hit',
+        last_updated: lastFetchTime
+      });
+    }
+
+    // Edge case: Request comes in exactly when server boots, before initial cache finishes
+    res.status(503).json({ error: "Server is warming up and building the initial dataset. Please wait 10 seconds and refresh." });
+
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), cached: !!globalAnalyticsCache });
 });
 
 app.listen(PORT, () => {
-  console.log(`\n🚀 Advanced Jira Analytics Backend running on port ${PORT}`);
+  console.log(`\n🚀 High-Performance Analytics Backend running on port ${PORT}`);
+  console.log(`⏳ Background polling activated (15m interval).`);
 });
