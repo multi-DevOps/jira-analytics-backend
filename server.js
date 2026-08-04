@@ -28,7 +28,6 @@ let globalAnalyticsCache = null;
 let isFetching = false;
 let lastFetchTime = null;
 
-// Reverted to the official, supported /search/jql endpoint using nextPageToken
 async function fetchAllJiraIssues(days = 365) {
   const jql = `updated >= -${days}d ORDER BY updated DESC`;
   const url = `${JIRA_URL}/rest/api/3/search/jql`;
@@ -270,13 +269,18 @@ function processJiraAnalytics(issues) {
 
     let timeSpentSeconds = fields.timespent || 0;
     
-    // --- EXTACT SPECIFIC WORKLOG DATES ---
-    const worklogDates = [];
+    // --- UPDATED: EXTRACT DETAILED WORKLOGS ---
+    const detailedWorklogs = [];
     if (fields.worklog?.worklogs) {
       timeSpentSeconds = fields.worklog.worklogs.reduce((sum, wl) => sum + (wl.timeSpentSeconds || 0), 0);
       fields.worklog.worklogs.forEach(wl => {
-        if (wl.started) worklogDates.push(wl.started.split('T')[0]);
-        else if (wl.updated) worklogDates.push(wl.updated.split('T')[0]);
+        const wDate = wl.started ? wl.started.split('T')[0] : (wl.updated ? wl.updated.split('T')[0] : null);
+        if (wDate) {
+          detailedWorklogs.push({
+            date: wDate,
+            seconds: wl.timeSpentSeconds || 0
+          });
+        }
       });
     }
     const hoursWorked = Math.round((timeSpentSeconds / 3600) * 10) / 10;
@@ -334,7 +338,7 @@ function processJiraAnalytics(issues) {
       is_escalation: isEscalation,
       classification,
       updated: fields.updated || fields.created,
-      worklog_dates: worklogDates
+      detailed_worklogs: detailedWorklogs
     });
 
     const projectName = fields.project?.name || 'Unknown Project';
@@ -434,8 +438,6 @@ app.post('/api/ai-summary', async (req, res) => {
 
 app.get('/api/data', async (req, res) => {
   try {
-    // We instantly trigger a background refresh if force is true, but we don't await it sequentially 
-    // to avoid frontend timeouts. We serve the cache immediately.
     if (req.query.force === 'true') {
       await refreshAnalyticsCache();
     }
