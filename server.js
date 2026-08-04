@@ -28,6 +28,7 @@ let globalAnalyticsCache = null;
 let isFetching = false;
 let lastFetchTime = null;
 
+// Reverted to the official, supported /search/jql endpoint using nextPageToken
 async function fetchAllJiraIssues(days = 365) {
   const jql = `updated >= -${days}d ORDER BY updated DESC`;
   const url = `${JIRA_URL}/rest/api/3/search/jql`;
@@ -268,8 +269,15 @@ function processJiraAnalytics(issues) {
     const devRecord = developerMetrics[devName];
 
     let timeSpentSeconds = fields.timespent || 0;
-    if (!timeSpentSeconds && fields.worklog?.worklogs) {
+    
+    // --- EXTACT SPECIFIC WORKLOG DATES ---
+    const worklogDates = [];
+    if (fields.worklog?.worklogs) {
       timeSpentSeconds = fields.worklog.worklogs.reduce((sum, wl) => sum + (wl.timeSpentSeconds || 0), 0);
+      fields.worklog.worklogs.forEach(wl => {
+        if (wl.started) worklogDates.push(wl.started.split('T')[0]);
+        else if (wl.updated) worklogDates.push(wl.updated.split('T')[0]);
+      });
     }
     const hoursWorked = Math.round((timeSpentSeconds / 3600) * 10) / 10;
 
@@ -325,7 +333,8 @@ function processJiraAnalytics(issues) {
       is_delayed: isDelayed,
       is_escalation: isEscalation,
       classification,
-      updated: fields.updated || fields.created
+      updated: fields.updated || fields.created,
+      worklog_dates: worklogDates
     });
 
     const projectName = fields.project?.name || 'Unknown Project';
@@ -392,7 +401,6 @@ async function refreshAnalyticsCache() {
 refreshAnalyticsCache();
 setInterval(refreshAnalyticsCache, 15 * 60 * 1000);
 
-// --- UPDATED AI SUMMARY ENDPOINT ---
 app.post('/api/ai-summary', async (req, res) => {
   try {
     const { activeTab, contextData } = req.body;
@@ -426,6 +434,8 @@ app.post('/api/ai-summary', async (req, res) => {
 
 app.get('/api/data', async (req, res) => {
   try {
+    // We instantly trigger a background refresh if force is true, but we don't await it sequentially 
+    // to avoid frontend timeouts. We serve the cache immediately.
     if (req.query.force === 'true') {
       await refreshAnalyticsCache();
     }
