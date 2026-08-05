@@ -28,8 +28,15 @@ let globalAnalyticsCache = null;
 let isFetching = false;
 let lastFetchTime = null;
 
+// --- INSTANT ALERT SYSTEM STATES ---
+let isCheckingAlerts = false;
+let activeAlerts = [];
+const processedHistoryIds = new Set();
+const serverStartTime = new Date(Date.now() - 5 * 60 * 1000); 
+
+// --- SAFE BACKGROUND SEQUENTIAL FETCH ---
 async function fetchAllJiraIssues(days = 365) {
-  const jql = `updated >= -${days}d ORDER BY updated DESC`;
+  const jql = `updated >= "-${days}d" ORDER BY updated DESC`;
   const url = `${JIRA_URL}/rest/api/3/search/jql`;
   
   let allIssues = [];
@@ -37,7 +44,7 @@ async function fetchAllJiraIssues(days = 365) {
   const maxResults = 100;
   let hasMore = true;
 
-  console.log(`\n🔄 [JIRA SYNC] Pulling data from board...`);
+  console.log(`\n🔄 [JIRA SYNC] Pulling data sequentially from board...`);
   const startTime = Date.now();
 
   while (hasMore) {
@@ -69,8 +76,7 @@ async function fetchAllJiraIssues(days = 365) {
     }
 
     const data = await response.json();
-    const issues = data.issues || [];
-    allIssues = allIssues.concat(issues);
+    if (data.issues) allIssues = allIssues.concat(data.issues);
     
     if (data.nextPageToken) {
       nextPageToken = data.nextPageToken;
@@ -80,7 +86,7 @@ async function fetchAllJiraIssues(days = 365) {
   }
 
   const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-  console.log(`✅ [JIRA SYNC] Loaded ${allIssues.length} issues into memory in ${duration}s.`);
+  console.log(`✅ [JIRA SYNC] Successfully loaded ${allIssues.length} issues into memory in ${duration}s.`);
   return allIssues;
 }
 
@@ -268,18 +274,13 @@ function processJiraAnalytics(issues) {
     const devRecord = developerMetrics[devName];
 
     let timeSpentSeconds = fields.timespent || 0;
-    
-    // --- UPDATED: EXTRACT DETAILED WORKLOGS ---
     const detailedWorklogs = [];
     if (fields.worklog?.worklogs) {
       timeSpentSeconds = fields.worklog.worklogs.reduce((sum, wl) => sum + (wl.timeSpentSeconds || 0), 0);
       fields.worklog.worklogs.forEach(wl => {
         const wDate = wl.started ? wl.started.split('T')[0] : (wl.updated ? wl.updated.split('T')[0] : null);
         if (wDate) {
-          detailedWorklogs.push({
-            date: wDate,
-            seconds: wl.timeSpentSeconds || 0
-          });
+          detailedWorklogs.push({ date: wDate, seconds: wl.timeSpentSeconds || 0 });
         }
       });
     }
@@ -402,46 +403,145 @@ async function refreshAnalyticsCache() {
   }
 }
 
+// --- DIAGNOSTIC FAST-POLLING CHANGELOG ENGINE ---
+async function checkForReassignments() {
+  if (isCheckingAlerts) return;
+  isCheckingAlerts = true;
+
+  try {
+    const timeOffsetMins = 10; 
+    const jql = `updated >= "-${timeOffsetMins}m" ORDER BY updated DESC`;
+    
+    const payload = {
+      jql,
+      maxResults: 100,
+      fields: ['project', ASSIGNED_TO_FIELD],
+      expand: 'changelog' 
+    };
+
+    const response = await fetch(`${JIRA_URL}/rest/api/3/search/jql`, {
+      method: 'POST',
+      headers: {
+         'Authorization': `Basic ${encodeCredentials()}`,
+         'Accept': 'application/json',
+         'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+       console.log(`❌ API Error: ${response.status} - ${await response.text()}`);
+       isCheckingAlerts = false;
+       return;
+    }
+
+    const data = await response.json();
+    const issues = data.issues || [];
+
+    issues.forEach(issue => {
+       const changelog = issue.changelog?.histories || [];
+       
+       changelog.forEach(history => {
+         const historyDate = new Date(history.created);
+         
+         if (historyDate > serverStartTime && !processedHistoryIds.has(history.id)) {
+            processedHistoryIds.add(history.id); 
+            
+            history.items.forEach(item => {
+               const fieldName = (item.field || '').toLowerCase();
+               const fieldId = (item.fieldId || '').toLowerCase();
+               const targetId = ASSIGNED_TO_FIELD.toLowerCase();
+
+               if (fieldId === targetId || fieldName.includes('assign')) {
+                  let oldRaw = item.fromString || item.from || '';
+                  let newRaw = item.toString || item.to || '';
+
+                  const extractName = (val) => {
+                      if (!val) return '';
+                      const match = val.match(/Parent values:\s*([^(]+)/i);
+                      if (match) return match[1].trim();
+                      return val.replace(/\(\d+\)/g, '').trim(); 
+                  };
+
+                  const oldVal = extractName(oldRaw);
+                  const newVal = extractName(newRaw);
+
+                  const isOldValid = oldVal !== '' && oldVal.toLowerCase() !== 'unassigned' && oldVal.toLowerCase() !== 'none';
+                  const isNewValid = newVal !== '' && newVal.toLowerCase() !== 'unassigned' && newVal.toLowerCase() !== 'none';
+
+                  if (isOldValid && isNewValid) {
+                      // NEW: Set acknowledged to false by default
+                      activeAlerts.push({
+                         id: history.id || Date.now().toString(),
+                         ticketKey: issue.key,
+                         project: issue.fields.project?.name || 'Unknown',
+                         user: history.author?.displayName || 'Unknown User',
+                         oldValue: oldVal,
+                         newValue: newVal,
+                         timestamp: history.created,
+                         acknowledged: false 
+                      });
+                  }
+               }
+            });
+         }
+       });
+    });
+  } catch (err) {
+    console.error("Alert check failed:", err.message);
+  } finally {
+    isCheckingAlerts = false;
+  }
+}
+
+app.get('/api/alerts', async (req, res) => {
+   await checkForReassignments();
+   res.json(activeAlerts);
+});
+
+// CHANGED: From clear to acknowledge
+app.post('/api/alerts/acknowledge', (req, res) => {
+   const { id } = req.body;
+   const alert = activeAlerts.find(a => a.id === id);
+   if (alert) alert.acknowledged = true;
+   res.json({ success: true });
+});
+
+app.post('/api/sync', (req, res) => {
+  refreshAnalyticsCache();
+  res.json({ status: 'Sync started' });
+});
+
+app.get('/api/sync-status', (req, res) => {
+  res.json({ isSyncing: isFetching });
+});
+
 refreshAnalyticsCache();
 setInterval(refreshAnalyticsCache, 15 * 60 * 1000);
 
 app.post('/api/ai-summary', async (req, res) => {
   try {
     const { activeTab, contextData } = req.body;
-
     const prompt = `
       You are an expert Agile & DevOps Analytics Consultant.
       Analyze the following Jira analytics snapshot specifically for the "${activeTab}" dashboard view.
-      
       DATA SNAPSHOT:
       ${JSON.stringify(contextData, null, 2)}
-      
       Provide a structured, concise response formatted cleanly without using asterisks or markdown, just plain text line by line:
-      1. Executive Overview for this specific view (2-3 sentences)
-      2. Key Risk Areas & Bottlenecks observed in this data (Bulleted list using dashes)
-      3. Performance Highlights (Bulleted list using dashes)
-      4. Recommendations for Team Management based on this view
-      Keep the tone professional, objective, and executive-ready.
+      1. Executive Overview (2-3 sentences)
+      2. Key Risk Areas & Bottlenecks (Bulleted list)
+      3. Performance Highlights (Bulleted list)
+      4. Recommendations for Team Management
     `;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-    });
-
+    const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
     res.json({ success: true, aiSummary: response.text });
   } catch (error) {
-    console.error('❌ AI Generation Error:', error.message);
     res.status(500).json({ error: 'Failed to generate AI insights.' });
   }
 });
 
 app.get('/api/data', async (req, res) => {
   try {
-    if (req.query.force === 'true') {
-      await refreshAnalyticsCache();
-    }
-    
     if (globalAnalyticsCache) {
       return res.json({
         ...globalAnalyticsCache,
@@ -449,8 +549,7 @@ app.get('/api/data', async (req, res) => {
         last_updated: lastFetchTime
       });
     }
-
-    res.status(503).json({ error: "Server is warming up and building the initial dataset. Please wait 10 seconds and refresh." });
+    res.status(503).json({ error: "Server is warming up and building the initial dataset." });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -462,5 +561,4 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`\n🚀 High-Performance Analytics Backend running on port ${PORT}`);
-  console.log(`⏳ Background polling activated (15m interval).`);
 });
