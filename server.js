@@ -23,6 +23,21 @@ function encodeCredentials() {
   return Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString('base64');
 }
 
+function extractTextFromADF(adf) {
+  if (typeof adf === 'string') return adf;
+  if (!adf || typeof adf !== 'object') return '';
+  let text = '';
+  if (adf.type === 'text' && adf.text) {
+    text += adf.text;
+  }
+  if (Array.isArray(adf.content)) {
+    adf.content.forEach(node => {
+      text += extractTextFromADF(node) + ' ';
+    });
+  }
+  return text.trim();
+}
+
 // --- IN-MEMORY CACHE ---
 let globalAnalyticsCache = null;
 let isFetching = false;
@@ -54,7 +69,8 @@ async function fetchAllJiraIssues(days = 365) {
       fields: [
         'key', 'summary', 'status', 'created', 'updated', 'duedate',
         'timespent', 'timeoriginalestimate', 'worklog',
-        'project', 'priority', 'labels', 'issuetype', ASSIGNED_TO_FIELD, PLANNED_UNPLANNED_FIELD
+        'project', 'priority', 'labels', 'issuetype', ASSIGNED_TO_FIELD, PLANNED_UNPLANNED_FIELD,
+        'customfield_10809', 'customfield_10807', 'customfield_10808'
       ]
     };
 
@@ -280,7 +296,8 @@ function processJiraAnalytics(issues) {
       fields.worklog.worklogs.forEach(wl => {
         const wDate = wl.started ? wl.started.split('T')[0] : (wl.updated ? wl.updated.split('T')[0] : null);
         if (wDate) {
-          detailedWorklogs.push({ date: wDate, seconds: wl.timeSpentSeconds || 0 });
+          const commentText = extractTextFromADF(wl.comment);
+          detailedWorklogs.push({ date: wDate, seconds: wl.timeSpentSeconds || 0, comment: commentText });
         }
       });
     }
@@ -326,6 +343,11 @@ function processJiraAnalytics(issues) {
     if (isUnplanned) devRecord.unplanned_tasks += 1;
     else devRecord.planned_tasks += 1;
 
+    const leaveFrom = fields.customfield_10809 || null;
+    const leaveTo = fields.customfield_10807 || null;
+    const leaveType = fields.customfield_10808?.value || fields.customfield_10808 || null;
+    const isLeaveTicket = status === 'Leaves Taken' || issueType === 'Leave Request';
+
     devRecord.issues_list.push({
       key: issue.key,
       summary: fields.summary || '',
@@ -339,7 +361,11 @@ function processJiraAnalytics(issues) {
       is_escalation: isEscalation,
       classification,
       updated: fields.updated || fields.created,
-      detailed_worklogs: detailedWorklogs
+      detailed_worklogs: detailedWorklogs,
+      leave_from: leaveFrom,
+      leave_to: leaveTo,
+      leave_type: leaveType,
+      is_leave_ticket: isLeaveTicket
     });
 
     const projectName = fields.project?.name || 'Unknown Project';
