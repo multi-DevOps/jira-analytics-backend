@@ -70,7 +70,8 @@ async function fetchAllJiraIssues(days = 365) {
         'key', 'summary', 'status', 'created', 'updated', 'duedate',
         'timespent', 'timeoriginalestimate', 'worklog',
         'project', 'priority', 'labels', 'issuetype', ASSIGNED_TO_FIELD, PLANNED_UNPLANNED_FIELD,
-        'customfield_10809', 'customfield_10807', 'customfield_10808'
+        'customfield_10809', 'customfield_10807', 'customfield_10808',
+        'customfield_10229', 'customfield_10303', 'customfield_10477', 'customfield_10438', 'customfield_10016'
       ]
     };
 
@@ -348,6 +349,16 @@ function processJiraAnalytics(issues) {
     const leaveType = fields.customfield_10808?.value || fields.customfield_10808 || null;
     const isLeaveTicket = status === 'Leaves Taken' || issueType === 'Leave Request';
 
+    const devMonth = fields.customfield_10229?.value || fields.customfield_10229 || null;
+    let roughEstHours = fields.customfield_10303 || fields.customfield_10477 || fields.customfield_10438 || fields.customfield_10016 || null;
+    if (roughEstHours === null && fields.timeoriginalestimate) {
+      roughEstHours = Math.round((fields.timeoriginalestimate / 3600) * 10) / 10;
+    }
+    if (roughEstHours !== null) {
+      roughEstHours = parseFloat(roughEstHours);
+      if (isNaN(roughEstHours)) roughEstHours = null;
+    }
+
     devRecord.issues_list.push({
       key: issue.key,
       summary: fields.summary || '',
@@ -365,7 +376,9 @@ function processJiraAnalytics(issues) {
       leave_from: leaveFrom,
       leave_to: leaveTo,
       leave_type: leaveType,
-      is_leave_ticket: isLeaveTicket
+      is_leave_ticket: isLeaveTicket,
+      dev_month: devMonth,
+      rough_estimated_hours: roughEstHours
     });
 
     const projectName = fields.project?.name || 'Unknown Project';
