@@ -364,6 +364,7 @@ function processJiraAnalytics(issues) {
       summary: fields.summary || '',
       status,
       project: fields.project?.name || 'Unknown',
+      assigned_to: devName,
       priority,
       issueType,
       hours_worked: hoursWorked,
