@@ -67,10 +67,10 @@ async function fetchAllJiraIssues(days = 365) {
       jql,
       maxResults,
       fields: [
-        'key', 'summary', 'status', 'created', 'updated', 'duedate',
+        'key', 'summary', 'description', 'status', 'created', 'updated', 'duedate',
         'timespent', 'timeoriginalestimate', 'worklog',
         'project', 'priority', 'labels', 'issuetype', ASSIGNED_TO_FIELD, PLANNED_UNPLANNED_FIELD,
-        'customfield_10809', 'customfield_10807', 'customfield_10808',
+        'customfield_10809', 'customfield_10807', 'customfield_10808', 'customfield_10846', 'customfield_10845', 'customfield_10844',
         'customfield_10229', 'customfield_10303', 'customfield_10477', 'customfield_10438', 'customfield_10016'
       ]
     };
@@ -278,11 +278,16 @@ function processJiraAnalytics(issues) {
     const customFieldVal = fields[ASSIGNED_TO_FIELD];
     let devName = 'Unassigned';
     
-    if (typeof customFieldVal === 'string') {
+    if (typeof customFieldVal === 'string' && customFieldVal.trim()) {
       devName = customFieldVal.trim();
     } else if (customFieldVal && typeof customFieldVal === 'object') {
-      devName = (customFieldVal.value || customFieldVal.displayName || 'Unassigned').trim();
+      devName = (customFieldVal.value || customFieldVal.displayName || '').trim();
     }
+
+    if ((!devName || devName === 'Unassigned') && fields.assignee) {
+      devName = (fields.assignee.displayName || fields.assignee.name || 'Unassigned').trim();
+    }
+    if (!devName) devName = 'Unassigned';
 
     if (!developerMetrics[devName]) {
       developerMetrics[devName] = { name: devName, total_tickets: 0, closed_tickets: 0, total_seconds_worked: 0, total_hours_worked: 0, escalations_handled: 0, delayed_tickets: 0, planned_tasks: 0, unplanned_tasks: 0, issues_list: [] };
@@ -349,19 +354,32 @@ function processJiraAnalytics(issues) {
     const leaveType = fields.customfield_10808?.value || fields.customfield_10808 || null;
     const isLeaveTicket = status === 'Leaves Taken' || issueType === 'Leave Request';
 
-    const devMonth = fields.customfield_10229?.value || fields.customfield_10229 || null;
-    let roughEstHours = fields.customfield_10303 || fields.customfield_10477 || fields.customfield_10438 || fields.customfield_10016 || null;
-    if (roughEstHours === null && fields.timeoriginalestimate) {
+    const devMonthObj = fields.customfield_10229;
+    let devMonth = null;
+    if (typeof devMonthObj === 'string') devMonth = devMonthObj.trim();
+    else if (devMonthObj && typeof devMonthObj === 'object') devMonth = (devMonthObj.value || devMonthObj.name || '').trim();
+
+    let roughEstHours = null;
+    if (fields.customfield_10303 !== undefined && fields.customfield_10303 !== null) {
+      roughEstHours = fields.customfield_10303;
+    } else if (fields.customfield_10477 !== undefined && fields.customfield_10477 !== null) {
+      roughEstHours = fields.customfield_10477;
+    } else if (fields.customfield_10438 !== undefined && fields.customfield_10438 !== null) {
+      roughEstHours = fields.customfield_10438;
+    } else if (fields.timeoriginalestimate !== undefined && fields.timeoriginalestimate !== null) {
       roughEstHours = Math.round((fields.timeoriginalestimate / 3600) * 10) / 10;
     }
+
     if (roughEstHours !== null) {
+      if (typeof roughEstHours === 'object') roughEstHours = roughEstHours.value || roughEstHours.name || null;
       roughEstHours = parseFloat(roughEstHours);
       if (isNaN(roughEstHours)) roughEstHours = null;
     }
 
-    devRecord.issues_list.push({
+    const issueData = {
       key: issue.key,
       summary: fields.summary || '',
+      description: fields.description || '',
       status,
       project: fields.project?.name || 'Unknown',
       assigned_to: devName,
@@ -379,8 +397,21 @@ function processJiraAnalytics(issues) {
       leave_type: leaveType,
       is_leave_ticket: isLeaveTicket,
       dev_month: devMonth,
-      rough_estimated_hours: roughEstHours
-    });
+      rough_estimated_hours: roughEstHours,
+      total_working_hours: fields.customfield_10844 || null,
+      total_working_days: fields.customfield_10845 || null,
+      target_month: fields.customfield_10846?.value || fields.customfield_10846 || null
+    };
+
+    if (isLeaveTicket && devName === 'Unassigned') {
+      Object.keys(developerMetrics).forEach(dName => {
+        if (dName !== 'Unassigned') {
+          developerMetrics[dName].issues_list.push({ ...issueData, assigned_to: dName });
+        }
+      });
+    }
+
+    devRecord.issues_list.push(issueData);
 
     const projectName = fields.project?.name || 'Unknown Project';
     if (!projectMetrics[projectName]) {
