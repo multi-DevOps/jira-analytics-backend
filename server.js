@@ -276,24 +276,25 @@ function processJiraAnalytics(issues) {
     const fields = issue.fields;
     
     const customFieldVal = fields[ASSIGNED_TO_FIELD];
-    let devName = 'Unassigned';
+    let devNames = [];
     
-    if (typeof customFieldVal === 'string' && customFieldVal.trim()) {
-      devName = customFieldVal.trim();
+    if (Array.isArray(customFieldVal)) {
+      customFieldVal.forEach(v => {
+        const n = (v.value || v.displayName || (typeof v === 'string' ? v : '')).trim();
+        if (n) devNames.push(n);
+      });
     } else if (customFieldVal && typeof customFieldVal === 'object') {
-      devName = (customFieldVal.value || customFieldVal.displayName || '').trim();
+      const n = (customFieldVal.value || customFieldVal.displayName || '').trim();
+      if (n) devNames.push(n);
+    } else if (typeof customFieldVal === 'string' && customFieldVal.trim()) {
+      devNames.push(customFieldVal.trim());
     }
 
-    if ((!devName || devName === 'Unassigned') && fields.assignee) {
-      devName = (fields.assignee.displayName || fields.assignee.name || 'Unassigned').trim();
+    if (devNames.length === 0 && fields.assignee) {
+      const n = (fields.assignee.displayName || fields.assignee.name || '').trim();
+      if (n) devNames.push(n);
     }
-    if (!devName) devName = 'Unassigned';
-
-    if (!developerMetrics[devName]) {
-      developerMetrics[devName] = { name: devName, total_tickets: 0, closed_tickets: 0, total_seconds_worked: 0, total_hours_worked: 0, escalations_handled: 0, delayed_tickets: 0, planned_tasks: 0, unplanned_tasks: 0, issues_list: [] };
-    }
-
-    const devRecord = developerMetrics[devName];
+    if (devNames.length === 0) devNames.push('Unassigned');
 
     let timeSpentSeconds = fields.timespent || 0;
     const detailedWorklogs = [];
@@ -340,14 +341,21 @@ function processJiraAnalytics(issues) {
     }
     const classification = isUnplanned ? 'unplanned' : 'planned';
 
-    devRecord.total_tickets += 1;
-    if (isClosed) devRecord.closed_tickets += 1;
-    devRecord.total_seconds_worked += timeSpentSeconds;
-    devRecord.total_hours_worked = Math.round((devRecord.total_seconds_worked / 3600) * 10) / 10;
-    if (isEscalation) devRecord.escalations_handled += 1;
-    if (isDelayed) devRecord.delayed_tickets += 1;
-    if (isUnplanned) devRecord.unplanned_tasks += 1;
-    else devRecord.planned_tasks += 1;
+    devNames.forEach(devName => {
+      if (!developerMetrics[devName]) {
+        developerMetrics[devName] = { name: devName, total_tickets: 0, closed_tickets: 0, total_seconds_worked: 0, total_hours_worked: 0, escalations_handled: 0, delayed_tickets: 0, planned_tasks: 0, unplanned_tasks: 0, issues_list: [] };
+      }
+      const devRecord = developerMetrics[devName];
+
+      devRecord.total_tickets += 1;
+      if (isClosed) devRecord.closed_tickets += 1;
+      devRecord.total_seconds_worked += timeSpentSeconds;
+      devRecord.total_hours_worked = Math.round((devRecord.total_seconds_worked / 3600) * 10) / 10;
+      if (isEscalation) devRecord.escalations_handled += 1;
+      if (isDelayed) devRecord.delayed_tickets += 1;
+      if (isUnplanned) devRecord.unplanned_tasks += 1;
+      else devRecord.planned_tasks += 1;
+    });
 
     const leaveFrom = fields.customfield_10809 || null;
     const leaveTo = fields.customfield_10807 || null;
@@ -376,13 +384,15 @@ function processJiraAnalytics(issues) {
       if (isNaN(roughEstHours)) roughEstHours = null;
     }
 
+    const assignedToNamesString = devNames.join(', ');
+
     const issueData = {
       key: issue.key,
       summary: fields.summary || '',
       description: fields.description || '',
       status,
       project: fields.project?.name || 'Unknown',
-      assigned_to: devName,
+      assigned_to: assignedToNamesString,
       priority,
       issueType,
       hours_worked: hoursWorked,
@@ -405,7 +415,7 @@ function processJiraAnalytics(issues) {
       start_date: fields.customfield_10015 || fields.created
     };
 
-    if (isLeaveTicket && devName === 'Unassigned') {
+    if (isLeaveTicket && devNames.includes('Unassigned')) {
       Object.keys(developerMetrics).forEach(dName => {
         if (dName !== 'Unassigned') {
           developerMetrics[dName].issues_list.push({ ...issueData, assigned_to: dName });
@@ -413,7 +423,9 @@ function processJiraAnalytics(issues) {
       });
     }
 
-    devRecord.issues_list.push(issueData);
+    devNames.forEach(dName => {
+      developerMetrics[dName].issues_list.push(issueData);
+    });
 
     const projectName = fields.project?.name || 'Unknown Project';
     if (!projectMetrics[projectName]) {
