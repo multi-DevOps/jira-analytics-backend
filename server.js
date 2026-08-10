@@ -400,7 +400,9 @@ function processJiraAnalytics(issues) {
       rough_estimated_hours: roughEstHours,
       total_working_hours: fields.customfield_10844 || null,
       total_working_days: fields.customfield_10845 || null,
-      target_month: fields.customfield_10846?.value || fields.customfield_10846 || null
+      target_month: fields.customfield_10846?.value || fields.customfield_10846 || null,
+      product: fields.customfield_10016?.value || fields.customfield_10016 || '-',
+      start_date: fields.customfield_10015 || fields.created
     };
 
     if (isLeaveTicket && devName === 'Unassigned') {
