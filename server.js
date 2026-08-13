@@ -360,7 +360,7 @@ function processJiraAnalytics(issues) {
     const leaveFrom = fields.customfield_10809 || null;
     const leaveTo = fields.customfield_10807 || null;
     const leaveType = fields.customfield_10808?.value || fields.customfield_10808 || null;
-    const isLeaveTicket = status === 'Leaves Taken' || issueType === 'Leave Request';
+    const isLeaveTicket = status === 'Leaves Taken' || issueType === 'Leave Request' || !!leaveType;
 
     const devMonthObj = fields.customfield_10229;
     let devMonth = null;
