@@ -40,6 +40,7 @@ function extractTextFromADF(adf) {
 
 // --- IN-MEMORY CACHE ---
 let globalAnalyticsCache = null;
+let globalIssuesList = [];
 let isFetching = false;
 let lastFetchTime = null;
 
@@ -474,12 +475,23 @@ function processJiraAnalytics(issues) {
   };
 }
 
-async function refreshAnalyticsCache() {
+async function refreshAnalyticsCache(days = 365) {
   if (isFetching) return;
   isFetching = true;
   try {
-    const issues = await fetchAllJiraIssues();
-    globalAnalyticsCache = processJiraAnalytics(issues);
+    const newIssues = await fetchAllJiraIssues(days);
+    
+    if (globalIssuesList.length === 0 || days === 365) {
+      globalIssuesList = newIssues;
+    } else {
+      const issueMap = new Map(globalIssuesList.map(i => [i.key, i]));
+      newIssues.forEach(newIssue => {
+        issueMap.set(newIssue.key, newIssue);
+      });
+      globalIssuesList = Array.from(issueMap.values());
+    }
+
+    globalAnalyticsCache = processJiraAnalytics(globalIssuesList);
     lastFetchTime = new Date();
   } catch (error) {
     console.error('❌ [CACHE ERROR] Failed to update background analytics:', error.message);
@@ -593,7 +605,7 @@ app.post('/api/alerts/acknowledge', (req, res) => {
 });
 
 app.post('/api/sync', (req, res) => {
-  refreshAnalyticsCache();
+  refreshAnalyticsCache(60);
   res.json({ status: 'Sync started' });
 });
 
@@ -601,8 +613,8 @@ app.get('/api/sync-status', (req, res) => {
   res.json({ isSyncing: isFetching });
 });
 
-refreshAnalyticsCache();
-setInterval(refreshAnalyticsCache, 15 * 60 * 1000);
+refreshAnalyticsCache(365);
+setInterval(() => refreshAnalyticsCache(365), 15 * 60 * 1000);
 
 app.post('/api/ai-summary', async (req, res) => {
   try {
