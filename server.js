@@ -50,61 +50,78 @@ let activeAlerts = [];
 const processedHistoryIds = new Set();
 const serverStartTime = new Date(Date.now() - 5 * 60 * 1000); 
 
-// --- SAFE BACKGROUND SEQUENTIAL FETCH ---
+// --- FAST PARALLEL JIRA FETCH ---
 async function fetchAllJiraIssues(days = 365) {
-  const jql = `updated >= "-${days}d" ORDER BY updated DESC`;
-  const url = `${JIRA_URL}/rest/api/3/search/jql`;
-  
-  let allIssues = [];
-  let nextPageToken = null; 
-  const maxResults = 100;
-  let hasMore = true;
-
-  console.log(`\n🔄 [JIRA SYNC] Pulling data sequentially from board...`);
+  console.log(`\n🔄 [JIRA SYNC] Pulling data in PARALLEL chunks for ${days} days...`);
   const startTime = Date.now();
-
-  while (hasMore) {
-    const payload = {
-      jql,
-      maxResults,
-      fields: [
-        'key', 'summary', 'description', 'status', 'created', 'updated', 'duedate',
-        'timespent', 'timeoriginalestimate', 'worklog',
-        'project', 'priority', 'labels', 'issuetype', ASSIGNED_TO_FIELD, PLANNED_UNPLANNED_FIELD,
-        'customfield_10809', 'customfield_10807', 'customfield_10808', 'customfield_10846', 'customfield_10845', 'customfield_10844',
-        'customfield_10229', 'customfield_10303', 'customfield_10477', 'customfield_10438', 'customfield_10016'
-      ]
-    };
-
-    if (nextPageToken) payload.nextPageToken = nextPageToken;
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Basic ${encodeCredentials()}`,
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`Jira API HTTP ${response.status}: ${err}`);
-    }
-
-    const data = await response.json();
-    if (data.issues) allIssues = allIssues.concat(data.issues);
-    
-    if (data.nextPageToken) {
-      nextPageToken = data.nextPageToken;
-    } else {
-      hasMore = false;
-    }
+  
+  const chunks = [];
+  const numWorkers = days > 60 ? 6 : 2;
+  const chunkSize = Math.max(1, Math.ceil(days / numWorkers));
+  
+  for (let i = 0; i < days; i += chunkSize) {
+    chunks.push({ start: i, end: Math.min(i + chunkSize, days) });
   }
 
+  const allChunkPromises = chunks.map(async (chunk) => {
+    // If start is 0, we query from Now to chunk.end. Else from start to end.
+    const jql = chunk.start === 0 
+      ? `updated >= "-${chunk.end}d" ORDER BY updated DESC`
+      : `updated >= "-${chunk.end}d" AND updated < "-${chunk.start}d" ORDER BY updated DESC`;
+      
+    const url = `${JIRA_URL}/rest/api/3/search/jql`;
+    
+    let chunkIssues = [];
+    let nextPageToken = null; 
+    let hasMore = true;
+
+    while (hasMore) {
+      const payload = {
+        jql,
+        maxResults: 100,
+        fields: [
+          'key', 'summary', 'description', 'status', 'created', 'updated', 'duedate',
+          'timespent', 'timeoriginalestimate', 'worklog',
+          'project', 'priority', 'labels', 'issuetype', ASSIGNED_TO_FIELD, PLANNED_UNPLANNED_FIELD,
+          'customfield_10809', 'customfield_10807', 'customfield_10808', 'customfield_10846', 'customfield_10845', 'customfield_10844',
+          'customfield_10229', 'customfield_10303', 'customfield_10477', 'customfield_10438', 'customfield_10016'
+        ]
+      };
+
+      if (nextPageToken) payload.nextPageToken = nextPageToken;
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${encodeCredentials()}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        console.error(`[JIRA API ERROR] Chunk ${chunk.start}-${chunk.end}d failed: HTTP ${response.status}`);
+        break;
+      }
+
+      const data = await response.json();
+      if (data.issues) chunkIssues = chunkIssues.concat(data.issues);
+      
+      if (data.nextPageToken) {
+        nextPageToken = data.nextPageToken;
+      } else {
+        hasMore = false;
+      }
+    }
+    return chunkIssues;
+  });
+
+  const results = await Promise.all(allChunkPromises);
+  const allIssues = results.flat();
+
   const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-  console.log(`✅ [JIRA SYNC] Successfully loaded ${allIssues.length} issues into memory in ${duration}s.`);
+  console.log(`✅ [JIRA SYNC] Successfully loaded ${allIssues.length} issues via PARALLEL FETCH in ${duration}s.`);
   return allIssues;
 }
 
