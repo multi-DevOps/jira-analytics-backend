@@ -55,7 +55,7 @@ async function fetchAllJiraIssues(days = 365) {
   const url = `${JIRA_URL}/rest/api/3/search/jql`;
   
   let allIssues = [];
-  let nextPageToken = null; 
+  let startAt = 0; 
   const maxResults = 100;
   let hasMore = true;
 
@@ -66,6 +66,7 @@ async function fetchAllJiraIssues(days = 365) {
     const payload = {
       jql,
       maxResults,
+      startAt,
       fields: [
         'key', 'summary', 'description', 'status', 'created', 'updated', 'duedate',
         'timespent', 'timeoriginalestimate', 'worklog',
@@ -74,8 +75,6 @@ async function fetchAllJiraIssues(days = 365) {
         'customfield_10229', 'customfield_10303', 'customfield_10477', 'customfield_10438', 'customfield_10016'
       ]
     };
-
-    if (nextPageToken) payload.nextPageToken = nextPageToken;
 
     const response = await fetch(url, {
       method: 'POST',
@@ -95,8 +94,11 @@ async function fetchAllJiraIssues(days = 365) {
     const data = await response.json();
     if (data.issues) allIssues = allIssues.concat(data.issues);
     
-    if (data.nextPageToken) {
-      nextPageToken = data.nextPageToken;
+    if (data.total !== undefined) {
+      startAt += maxResults;
+      if (startAt >= data.total) {
+        hasMore = false;
+      }
     } else {
       hasMore = false;
     }
