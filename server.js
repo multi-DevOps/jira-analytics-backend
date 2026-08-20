@@ -676,3 +676,4 @@ app.get('/api/health', (req, res) => {
 app.listen(PORT, () => {
   console.log(`\n🚀 High-Performance Analytics Backend running on port ${PORT}`);
 });
+console.log("Backend CI/CD deployment test successful");
