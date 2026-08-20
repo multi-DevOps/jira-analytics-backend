@@ -1,0 +1,19 @@
+name: Auto Deploy Backend
+on:
+  push:
+    branches: [ main ]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Hetzner
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd /root/jira-analytics-deploy/backend
+            git pull origin main
+            cd ..
+            docker compose up -d --build backend
