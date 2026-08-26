@@ -120,6 +120,38 @@ async function fetchAllJiraIssues(days = 365) {
   const results = await Promise.all(allChunkPromises);
   const allIssues = results.flat();
 
+  // --- FETCH MISSING WORKLOGS FOR HEAVILY LOGGED TICKETS ---
+  const issuesNeedingWorklogs = allIssues.filter(issue => 
+    issue.fields && issue.fields.worklog && 
+    issue.fields.worklog.total > (issue.fields.worklog.worklogs ? issue.fields.worklog.worklogs.length : 0)
+  );
+
+  if (issuesNeedingWorklogs.length > 0) {
+    console.log(`\n⏳ [JIRA SYNC] Fetching full worklogs for ${issuesNeedingWorklogs.length} heavily-logged issues...`);
+    // Fetch in parallel batches of 5 to avoid rate limits
+    const batchSize = 5;
+    for (let i = 0; i < issuesNeedingWorklogs.length; i += batchSize) {
+      const batch = issuesNeedingWorklogs.slice(i, i + batchSize);
+      await Promise.all(batch.map(async (issue) => {
+        try {
+          const wlRes = await fetch(`${JIRA_URL}/rest/api/3/issue/${issue.key}/worklog`, {
+            headers: {
+              'Authorization': `Basic ${encodeCredentials()}`,
+              'Accept': 'application/json'
+            }
+          });
+          if (wlRes.ok) {
+            const wlData = await wlRes.json();
+            issue.fields.worklog.worklogs = wlData.worklogs || [];
+            issue.fields.worklog.total = wlData.total || (wlData.worklogs ? wlData.worklogs.length : 0);
+          }
+        } catch (e) {
+          console.error(`Failed to fetch worklogs for ${issue.key}:`, e);
+        }
+      }));
+    }
+  }
+
   const duration = ((Date.now() - startTime) / 1000).toFixed(2);
   console.log(`✅ [JIRA SYNC] Successfully loaded ${allIssues.length} issues via PARALLEL FETCH in ${duration}s.`);
   return allIssues;
