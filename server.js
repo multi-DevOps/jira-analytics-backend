@@ -170,7 +170,8 @@ function processMonthlyAnalytics(issues) {
     'UIUX': 'UIUX',
     'Devops Works': 'DevOps',
     'OPS': 'DevOps',
-    'Planning': 'Bonton'
+    'Planning': 'Bonton',
+    'BTS - Backtest Strategy': 'BTS'
   };
 
   const monthsData = {};
