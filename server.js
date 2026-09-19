@@ -411,7 +411,11 @@ function processJiraAnalytics(issues) {
     const leaveFrom = fields.customfield_10809 || null;
     const leaveTo = fields.customfield_10807 || null;
     const leaveType = fields.customfield_10808?.value || fields.customfield_10808 || null;
-    const isLeaveTicket = status === 'Leaves Taken' || issueType === 'Leave Request' || !!leaveType;
+    
+    // Support both legacy leave fields and the new dedicated issue types
+    const issueTypeLower = (issueType || '').toLowerCase();
+    const isNewIssueType = ['weekoff', 'leave', 'compoff'].includes(issueTypeLower);
+    const isLeaveTicket = isNewIssueType || status === 'Leaves Taken' || issueType === 'Leave Request' || !!leaveType;
 
     const devMonthObj = fields.customfield_10229;
     let devMonth = null;
@@ -466,17 +470,24 @@ function processJiraAnalytics(issues) {
       start_date: fields.customfield_10015 || fields.created
     };
 
-    if (isLeaveTicket && devNames.includes('Unassigned')) {
+    // Weekoff (or unassigned leave tickets) apply to everyone
+    const isCompanyWide = (issueTypeLower === 'weekoff') || (isLeaveTicket && devNames.includes('Unassigned'));
+
+    if (isCompanyWide) {
       Object.keys(developerMetrics).forEach(dName => {
         if (dName !== 'Unassigned') {
-          developerMetrics[dName].issues_list.push({ ...issueData, assigned_to: dName });
+          developerMetrics[dName].issues_list.push({ 
+            ...issueData, 
+            assigned_to: dName,
+            leave_type: issueTypeLower === 'weekoff' ? 'Weekoff' : issueData.leave_type 
+          });
         }
       });
+    } else {
+      devNames.forEach(dName => {
+        developerMetrics[dName].issues_list.push(issueData);
+      });
     }
-
-    devNames.forEach(dName => {
-      developerMetrics[dName].issues_list.push(issueData);
-    });
 
     const projectName = fields.project?.name || 'Unknown Project';
     if (!projectMetrics[projectName]) {
