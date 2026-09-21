@@ -414,7 +414,7 @@ function processJiraAnalytics(issues) {
     
     // Support both legacy leave fields and the new dedicated issue types
     const issueTypeLower = (issueType || '').toLowerCase();
-    const isNewIssueType = ['weekoff', 'leave', 'compoff'].includes(issueTypeLower);
+    const isNewIssueType = ['weekoff', 'leave', 'compoff', 'holiday'].includes(issueTypeLower);
     const isLeaveTicket = isNewIssueType || status === 'Leaves Taken' || issueType === 'Leave Request' || !!leaveType;
 
     const devMonthObj = fields.customfield_10229;
@@ -470,16 +470,20 @@ function processJiraAnalytics(issues) {
       start_date: fields.customfield_10015 || fields.created
     };
 
-    // Weekoff (or unassigned leave tickets) apply to everyone
-    const isCompanyWide = (issueTypeLower === 'weekoff') || (isLeaveTicket && devNames.includes('Unassigned'));
+    // Weekoff/Holiday (or unassigned leave tickets) apply to everyone
+    const isCompanyWide = (issueTypeLower === 'weekoff' || issueTypeLower === 'holiday') || (isLeaveTicket && devNames.includes('Unassigned'));
 
     if (isCompanyWide) {
       Object.keys(developerMetrics).forEach(dName => {
         if (dName !== 'Unassigned') {
+          let dynamicLeaveType = issueData.leave_type;
+          if (issueTypeLower === 'weekoff') dynamicLeaveType = 'Weekoff';
+          else if (issueTypeLower === 'holiday') dynamicLeaveType = 'Holiday';
+
           developerMetrics[dName].issues_list.push({ 
             ...issueData, 
             assigned_to: dName,
-            leave_type: issueTypeLower === 'weekoff' ? 'Weekoff' : issueData.leave_type 
+            leave_type: dynamicLeaveType 
           });
         }
       });
