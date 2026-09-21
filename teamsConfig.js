@@ -5,9 +5,12 @@ module.exports = {
     "Darshi shah",
     "Tvisha Parekh",
     "Ankur Kumar",
-    "Hetvi Pedhadiya",
     "Janvi Kamani",
-    "Jay Moteriya"
+    "Jay Moteriya",
+    "Prince solanki",
+    "Nency senjaliya",
+    "kunal pithva",
+    "Khushi Lachhwani"
   ],
   "Mobile Team": [
     "Uttam Desai",
@@ -18,17 +21,10 @@ module.exports = {
   "MM Team": [
     "Paresh Desai",
     "Sahil Rathod",
-    "Parthik Pankhaniya",
-    "Meet-Kacha",
-    "Mudit Bhatt",
-    "Mahesh Dabhi"
+    "Parthik Pankhaniya"
   ],
   "Forex Team": [
-    "Vivek Kudecha",
-    "Khushi Lachhwani",
-    "kunal pithva",
-    "Nency senjaliya",
-    "Prince solanki"
+    "Vivek Kudecha"
   ],
   "UI/UX Team": [
     "Heval Patel",
@@ -44,5 +40,4 @@ module.exports = {
     "suresh ambechada",
     "Aditya Vadodariya"
   ]
-  // Add all 32 developer names here exactly as spelled in Jira dropdown
 };
