@@ -8,7 +8,6 @@ module.exports = {
     "Janvi Kamani",
     "Jay Moteriya",
     "Prince solanki",
-    "Nency senjaliya",
     "kunal pithva",
     "Khushi Lachhwani"
   ],
@@ -23,12 +22,9 @@ module.exports = {
     "Sahil Rathod",
     "Parthik Pankhaniya"
   ],
-  "Forex Team": [
-    "Vivek Kudecha"
-  ],
+  "Forex Team": [],
   "UI/UX Team": [
     "Heval Patel",
-    "Bhavin Gohil",
     "Prit Gohel"
   ],
   "DevOps & Infra": [
@@ -37,7 +33,6 @@ module.exports = {
     "Harsh Bhalodiya"
   ],
   "AI Team ": [
-    "suresh ambechada",
     "Aditya Vadodariya"
   ]
 };

@@ -13,9 +13,16 @@ jobs:
           username: root
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            cd /root/jira-analytics-deploy/backend
+            if [ ! -d "/root/jira-analytics-v2" ]; then
+              cp -a /root/jira-analytics-deploy /root/jira-analytics-v2
+              sed -i 's/container_name: jira_analytics_backend/container_name: jira_analytics_backend_v2/g' /root/jira-analytics-v2/docker-compose.yml
+              sed -i 's/container_name: jira_analytics_frontend/container_name: jira_analytics_frontend_v2/g' /root/jira-analytics-v2/docker-compose.yml
+              sed -i 's/container_name: jira_analytics_tunnel/container_name: jira_analytics_tunnel_v2/g' /root/jira-analytics-v2/docker-compose.yml
+            fi
+            cd /root/jira-analytics-v2/backend
             git fetch origin
             git checkout v2-new-ui
             git pull origin v2-new-ui
             cd ..
+            docker compose -f /root/jira-analytics-deploy/docker-compose.yml stop backend || true
             docker compose up -d --build backend

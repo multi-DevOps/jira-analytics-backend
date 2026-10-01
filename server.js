@@ -17,6 +17,13 @@ const ASSIGNED_TO_FIELD = process.env.JIRA_ASSIGNED_TO_FIELD_ID || 'customfield_
 const PLANNED_UNPLANNED_FIELD = process.env.JIRA_PLANNED_UNPLANNED_FIELD_ID || 'customfield_10370';
 const PORT = process.env.PORT || 3001;
 
+const IGNORED_USERS = [
+  'Bhavin Gohil', 'Bhumika Patel', 'DevOps', 'Ghanshyam Maru', 'Hetvi Pedhadiya', 
+  'Khushi Shukla', 'Mahesh Dabhi', 'Meet-Kacha', 'Mudit Bhatt', 'Nency Senjaliya', 'Nency senjaliya',
+  'Rahul Makwana', 'Suresh Ambechada', 'suresh ambechada', 'Unassigned', 'Vivek Kudecha'
+];
+
+
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 function encodeCredentials() {
@@ -84,7 +91,7 @@ async function fetchAllJiraIssues(days = 365) {
           'timespent', 'timeoriginalestimate', 'worklog',
           'project', 'priority', 'labels', 'issuetype', ASSIGNED_TO_FIELD, PLANNED_UNPLANNED_FIELD,
           'customfield_10809', 'customfield_10807', 'customfield_10808', 'customfield_10846', 'customfield_10845', 'customfield_10844',
-          'customfield_10229', 'customfield_10303', 'customfield_10477', 'customfield_10438', 'customfield_10016'
+          'customfield_10229', 'customfield_10303', 'customfield_10477', 'customfield_10438', 'customfield_10016', 'customfield_10192'
         ]
       };
 
@@ -346,6 +353,9 @@ function processJiraAnalytics(issues) {
       if (n) devNames.push(n);
     }
     if (devNames.length === 0) devNames.push('Unassigned');
+    devNames = devNames.filter(n => !IGNORED_USERS.includes(n));
+    if (devNames.length === 0) return; // Skip issue entirely if no valid devs assigned
+
 
     let timeSpentSeconds = fields.timespent || 0;
     const detailedWorklogs = [];
@@ -393,6 +403,7 @@ function processJiraAnalytics(issues) {
     const classification = isUnplanned ? 'unplanned' : 'planned';
 
     devNames.forEach(devName => {
+      if (IGNORED_USERS.includes(devName)) return; // FILTER OUT REMOVED USERS
       if (!developerMetrics[devName]) {
         developerMetrics[devName] = { name: devName, total_tickets: 0, closed_tickets: 0, total_seconds_worked: 0, total_hours_worked: 0, escalations_handled: 0, delayed_tickets: 0, planned_tasks: 0, unplanned_tasks: 0, issues_list: [] };
       }
@@ -466,7 +477,7 @@ function processJiraAnalytics(issues) {
       total_working_hours: fields.customfield_10844 || null,
       total_working_days: fields.customfield_10845 || null,
       target_month: fields.customfield_10846?.value || fields.customfield_10846 || null,
-      product: fields.customfield_10016?.value || fields.customfield_10016 || '-',
+      product: fields.customfield_10192?.value || fields.customfield_10192 || '-',
       start_date: fields.customfield_10015 || fields.created
     };
 
@@ -475,7 +486,7 @@ function processJiraAnalytics(issues) {
 
     if (isCompanyWide) {
       Object.keys(developerMetrics).forEach(dName => {
-        if (dName !== 'Unassigned') {
+        if (dName !== 'Unassigned' && developerMetrics[dName]) {
           let dynamicLeaveType = issueData.leave_type;
           if (issueTypeLower === 'weekoff') dynamicLeaveType = 'Weekoff';
           else if (issueTypeLower === 'holiday') dynamicLeaveType = 'Holiday';
@@ -489,7 +500,9 @@ function processJiraAnalytics(issues) {
       });
     } else {
       devNames.forEach(dName => {
-        developerMetrics[dName].issues_list.push(issueData);
+        if (developerMetrics[dName]) {
+            developerMetrics[dName].issues_list.push(issueData);
+        }
       });
     }
 
