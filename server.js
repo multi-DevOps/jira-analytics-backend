@@ -482,14 +482,14 @@ function processJiraAnalytics(issues) {
     };
 
     // Weekoff/Holiday (or unassigned leave tickets) apply to everyone
-    const isCompanyWide = (issueTypeLower === 'weekoff' || issueTypeLower === 'holiday') || (isLeaveTicket && devNames.includes('Unassigned'));
+    const isCompanyWide = (issueTypeLower === 'weekoff' || issueTypeLower === 'holiday') || (isLeaveTicket && (devNames.includes('Unassigned') || devNames.includes('CTO')));
 
     if (isCompanyWide) {
       Object.keys(developerMetrics).forEach(dName => {
         if (dName !== 'Unassigned' && developerMetrics[dName]) {
           let dynamicLeaveType = issueData.leave_type;
           if (issueTypeLower === 'weekoff') dynamicLeaveType = 'Weekoff';
-          else if (issueTypeLower === 'holiday') dynamicLeaveType = 'Holiday';
+          else if (issueTypeLower === 'holiday' || devNames.includes('CTO')) dynamicLeaveType = 'Holiday';
 
           developerMetrics[dName].issues_list.push({ 
             ...issueData, 
