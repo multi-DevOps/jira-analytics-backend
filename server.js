@@ -89,7 +89,7 @@ async function fetchAllJiraIssues(days = 365) {
         fields: [
           'key', 'summary', 'description', 'status', 'created', 'updated', 'duedate',
           'timespent', 'timeoriginalestimate', 'worklog',
-          'project', 'priority', 'labels', 'issuetype', ASSIGNED_TO_FIELD, PLANNED_UNPLANNED_FIELD,
+          'project', 'priority', 'labels', 'issuetype', 'assignee', ASSIGNED_TO_FIELD, PLANNED_UNPLANNED_FIELD,
           'customfield_10809', 'customfield_10807', 'customfield_10808', 'customfield_10846', 'customfield_10845', 'customfield_10844',
           'customfield_10229', 'customfield_10303', 'customfield_10477', 'customfield_10438', 'customfield_10016', 'customfield_10192'
         ]
@@ -452,6 +452,7 @@ function processJiraAnalytics(issues) {
 
     const assignedToNamesString = devNames.join(', ');
 
+    
     const issueData = {
       key: issue.key,
       summary: fields.summary || '',
@@ -484,6 +485,7 @@ function processJiraAnalytics(issues) {
     // Weekoff/Holiday (or unassigned leave tickets) apply to everyone
     const isCompanyWide = (issueTypeLower === 'weekoff' || issueTypeLower === 'holiday') || (isLeaveTicket && (devNames.includes('Unassigned') || devNames.includes('CTO')));
 
+    if (issueData.key === "HM-70") { console.log("HM-70 processing. isCompanyWide=", isCompanyWide, "devNames=", devNames); }
     if (isCompanyWide) {
       Object.keys(developerMetrics).forEach(dName => {
         if (dName !== 'Unassigned' && developerMetrics[dName]) {
