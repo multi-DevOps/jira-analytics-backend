@@ -48,6 +48,28 @@ function extractTextFromADF(adf) {
 // --- IN-MEMORY CACHE ---
 let globalAnalyticsCache = null;
 let globalIssuesList = [];
+let VALID_JIRA_USERS = [];
+
+async function fetchValidJiraUsers() {
+  try {
+    const contextUrl = `${JIRA_URL}/rest/api/3/field/${ASSIGNED_TO_FIELD}/context`;
+    const ctxRes = await fetch(contextUrl, { headers: { 'Authorization': `Basic ${encodeCredentials()}`, 'Accept': 'application/json' } });
+    const ctxData = await ctxRes.json();
+    if (ctxData.values && ctxData.values.length > 0) {
+      const contextId = ctxData.values[0].id;
+      const optUrl = `${JIRA_URL}/rest/api/3/field/${ASSIGNED_TO_FIELD}/context/${contextId}/option`;
+      const optRes = await fetch(optUrl, { headers: { 'Authorization': `Basic ${encodeCredentials()}`, 'Accept': 'application/json' } });
+      const optData = await optRes.json();
+      if (optData.values) {
+        VALID_JIRA_USERS = optData.values.map(v => v.value);
+        console.log(`✅ Loaded ${VALID_JIRA_USERS.length} valid Jira Assigned To options.`);
+      }
+    }
+  } catch(e) {
+    console.error("Failed to fetch valid Jira users:", e);
+  }
+}
+
 let isFetching = false;
 let lastFetchTime = null;
 
@@ -59,6 +81,10 @@ const serverStartTime = new Date(Date.now() - 5 * 60 * 1000);
 
 // --- FAST PARALLEL JIRA FETCH ---
 async function fetchAllJiraIssues(days = 365) {
+  if (VALID_JIRA_USERS.length === 0) {
+    await fetchValidJiraUsers();
+  }
+
   console.log(`\n🔄 [JIRA SYNC] Pulling data in PARALLEL chunks for ${days} days...`);
   const startTime = Date.now();
   
@@ -315,8 +341,17 @@ function processJiraAnalytics(issues) {
   const projectMetrics = {};
   const teamMetrics = {};
 
+  // Ensure EVERY valid Jira user (except ignored ones) is initialized
+  VALID_JIRA_USERS.forEach(devName => {
+    if (IGNORED_USERS.includes(devName)) return;
+    if (!developerMetrics[devName]) {
+      developerMetrics[devName] = { name: devName, total_tickets: 0, closed_tickets: 0, total_seconds_worked: 0, total_hours_worked: 0, escalations_handled: 0, delayed_tickets: 0, planned_tasks: 0, unplanned_tasks: 0, issues_list: [] };
+    }
+  });
+
   Object.keys(teamsConfig).forEach(teamName => {
     teamsConfig[teamName].forEach(devName => {
+      if (VALID_JIRA_USERS.length > 0 && !VALID_JIRA_USERS.includes(devName)) return; // Strict match with Jira dropdown
       if (!developerMetrics[devName]) {
         developerMetrics[devName] = { name: devName, total_tickets: 0, closed_tickets: 0, total_seconds_worked: 0, total_hours_worked: 0, escalations_handled: 0, delayed_tickets: 0, planned_tasks: 0, unplanned_tasks: 0, issues_list: [] };
       }
@@ -353,7 +388,7 @@ function processJiraAnalytics(issues) {
       if (n) devNames.push(n);
     }
     if (devNames.length === 0) devNames.push('Unassigned');
-    devNames = devNames.filter(n => !IGNORED_USERS.includes(n));
+    devNames = devNames.filter(n => !IGNORED_USERS.includes(n) && (VALID_JIRA_USERS.length === 0 || VALID_JIRA_USERS.includes(n)));
     const issueType = fields.issuetype?.name || '';
     const issueTypeLower = issueType.toLowerCase();
     const isHolidayOrWeekoff = issueTypeLower === 'weekoff' || issueTypeLower === 'holiday';
