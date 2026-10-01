@@ -205,7 +205,7 @@ function processMonthlyAnalytics(issues) {
     const projRecord = monthsData[monthKey][category];
     const rawPlannedVal = fields[PLANNED_UNPLANNED_FIELD]?.value || '';
     const labels = fields.labels || [];
-    const issueType = fields.issuetype?.name || '';
+    // issueType already defined above
     
     let isUnplanned = false;
     if (rawPlannedVal) {
@@ -354,7 +354,10 @@ function processJiraAnalytics(issues) {
     }
     if (devNames.length === 0) devNames.push('Unassigned');
     devNames = devNames.filter(n => !IGNORED_USERS.includes(n));
-    if (devNames.length === 0) return; // Skip issue entirely if no valid devs assigned
+    const issueType = fields.issuetype?.name || '';
+    const issueTypeLower = issueType.toLowerCase();
+    const isHolidayOrWeekoff = issueTypeLower === 'weekoff' || issueTypeLower === 'holiday';
+    if (devNames.length === 0 && !isHolidayOrWeekoff) return;
 
 
     let timeSpentSeconds = fields.timespent || 0;
@@ -375,7 +378,7 @@ function processJiraAnalytics(issues) {
     const isClosed = ['Done', 'Closed', 'Resolved'].includes(status);
 
     const labels = fields.labels || [];
-    const issueType = fields.issuetype?.name || '';
+    // issueType already defined above
     const priority = fields.priority?.name || '';
     
     const isEscalation = labels.some(l => l.toLowerCase().includes('escalat')) || 
@@ -424,7 +427,7 @@ function processJiraAnalytics(issues) {
     const leaveType = fields.customfield_10808?.value || fields.customfield_10808 || null;
     
     // Support both legacy leave fields and the new dedicated issue types
-    const issueTypeLower = (issueType || '').toLowerCase();
+    // issueTypeLower already defined above
     const isNewIssueType = ['weekoff', 'leave', 'compoff', 'holiday'].includes(issueTypeLower);
     const isLeaveTicket = isNewIssueType || status === 'Leaves Taken' || issueType === 'Leave Request' || !!leaveType;
 
@@ -483,7 +486,7 @@ function processJiraAnalytics(issues) {
     };
 
     // Weekoff/Holiday (or unassigned leave tickets) apply to everyone
-    const isCompanyWide = (issueTypeLower === 'weekoff' || issueTypeLower === 'holiday') || (isLeaveTicket && (devNames.includes('Unassigned') || devNames.includes('CTO')));
+    const isCompanyWide = isHolidayOrWeekoff || (isLeaveTicket && (devNames.includes('Unassigned') || devNames.includes('CTO')));
 
     if (issueData.key === "HM-70") { console.log("HM-70 processing. isCompanyWide=", isCompanyWide, "devNames=", devNames); }
     if (isCompanyWide) {
@@ -491,7 +494,7 @@ function processJiraAnalytics(issues) {
         if (dName !== 'Unassigned' && developerMetrics[dName]) {
           let dynamicLeaveType = issueData.leave_type;
           if (issueTypeLower === 'weekoff') dynamicLeaveType = 'Weekoff';
-          else if (issueTypeLower === 'holiday' || devNames.includes('CTO')) dynamicLeaveType = 'Holiday';
+          else if (issueTypeLower === 'holiday' || isCompanyWide) dynamicLeaveType = 'Holiday';
 
           developerMetrics[dName].issues_list.push({ 
             ...issueData, 
