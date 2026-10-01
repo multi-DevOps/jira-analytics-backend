@@ -205,7 +205,7 @@ function processMonthlyAnalytics(issues) {
     const projRecord = monthsData[monthKey][category];
     const rawPlannedVal = fields[PLANNED_UNPLANNED_FIELD]?.value || '';
     const labels = fields.labels || [];
-    // issueType already defined above
+    const issueType = fields.issuetype?.name || '';
     
     let isUnplanned = false;
     if (rawPlannedVal) {
