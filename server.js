@@ -517,7 +517,7 @@ function processJiraAnalytics(issues) {
       total_working_days: fields.customfield_10845 || null,
       target_month: fields.customfield_10846?.value || fields.customfield_10846 || null,
       product: fields.customfield_10192?.value || fields.customfield_10192 || '-',
-      start_date: fields.customfield_10015 || fields.created
+      start_date: fields.customfield_10015 || null
     };
 
     // Weekoff/Holiday (or unassigned leave tickets) apply to everyone
