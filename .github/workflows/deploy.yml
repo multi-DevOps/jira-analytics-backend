@@ -19,10 +19,17 @@ jobs:
               sed -i 's/container_name: jira_analytics_frontend/container_name: jira_analytics_frontend_v2/g' /root/jira-analytics-v2/docker-compose.yml
               sed -i 's/container_name: jira_analytics_tunnel/container_name: jira_analytics_tunnel_v2/g' /root/jira-analytics-v2/docker-compose.yml
             fi
-            cd /root/jira-analytics-v2/backend
+            # Fix stuck v2 containers from old script
+            docker rm -f jira_analytics_backend_v2 jira_analytics_frontend_v2 jira_analytics_tunnel_v2 || true
+            cd /root/jira-analytics-v2/frontend
+            git fetch origin
+            git checkout v2-new-ui || git checkout main
+            git pull || true
+            cd ../backend
             git fetch origin
             git checkout v2-new-ui
             git pull origin v2-new-ui
             cd ..
-            docker compose -f /root/jira-analytics-deploy/docker-compose.yml stop backend || true
-            docker compose up -d --build backend
+            # Stop ONLY the V2 containers (leaving V1 running)
+            docker compose stop
+            docker compose up -d --build
