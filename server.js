@@ -117,7 +117,8 @@ async function fetchAllJiraIssues(days = 365) {
           'timespent', 'timeoriginalestimate', 'worklog',
           'project', 'priority', 'labels', 'issuetype', 'assignee', ASSIGNED_TO_FIELD, PLANNED_UNPLANNED_FIELD,
           'customfield_10809', 'customfield_10807', 'customfield_10808', 'customfield_10846', 'customfield_10845', 'customfield_10844',
-          'customfield_10229', 'customfield_10303', 'customfield_10477', 'customfield_10438', 'customfield_10016', 'customfield_10192'
+          'customfield_10229', 'customfield_10303', 'customfield_10477', 'customfield_10438', 'customfield_10016', 'customfield_10192',
+          'issuelinks', 'subtasks', 'parent'
         ]
       };
 
@@ -491,6 +492,39 @@ function processJiraAnalytics(issues) {
     const assignedToNamesString = devNames.join(', ');
 
     
+    const linkedIssues = [];
+    if (fields.issuelinks && Array.isArray(fields.issuelinks)) {
+      fields.issuelinks.forEach(link => {
+        const other = link.inwardIssue || link.outwardIssue;
+        if (other) {
+          linkedIssues.push({
+            key: other.key,
+            summary: other.fields?.summary || '',
+            status: other.fields?.status?.name || 'Open',
+            type: link.type?.name || 'Relates',
+            direction: link.inwardIssue ? 'inward' : 'outward'
+          });
+        }
+      });
+    }
+
+    const subtasksList = [];
+    if (fields.subtasks && Array.isArray(fields.subtasks)) {
+      fields.subtasks.forEach(st => {
+        subtasksList.push({
+          key: st.key,
+          summary: st.fields?.summary || '',
+          status: st.fields?.status?.name || 'Open'
+        });
+      });
+    }
+
+    const parentObj = fields.parent ? {
+      key: fields.parent.key,
+      summary: fields.parent.fields?.summary || '',
+      status: fields.parent.fields?.status?.name || ''
+    } : null;
+
     const issueData = {
       key: issue.key,
       summary: fields.summary || '',
@@ -517,7 +551,10 @@ function processJiraAnalytics(issues) {
       total_working_days: fields.customfield_10845 || null,
       target_month: fields.customfield_10846?.value || fields.customfield_10846 || null,
       product: fields.customfield_10192?.value || fields.customfield_10192 || '-',
-      start_date: fields.customfield_10015 || null
+      start_date: fields.customfield_10015 || null,
+      linked_issues: linkedIssues,
+      subtasks: subtasksList,
+      parent: parentObj
     };
 
     // Weekoff/Holiday (or unassigned leave tickets) apply to everyone
